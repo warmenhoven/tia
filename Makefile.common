@@ -1,4 +1,5 @@
 CFLAGS += -I$(CORE_DIR)/src
 
 SOURCES_C := \
+	$(CORE_DIR)/src/cpu.c \
 	$(CORE_DIR)/src/libretro.c

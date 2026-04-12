@@ -9,6 +9,12 @@
 *.exp
 *.ilk
 *.pdb
+*.dSYM/
+
+# Unit-test binaries (extension-less); keep their sources.
+tests/unit/test_*
+!tests/unit/test_*.c
+!tests/unit/test_*.h
 
 # Python
 tests/int/.venv/

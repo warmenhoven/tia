@@ -1,9 +1,11 @@
 CC     ?= cc
-CFLAGS ?= -O0 -g -Wall -Wextra -I../../src
+CFLAGS ?= -O2 -g -Wall -Wextra -I../../src
 
-SRC_DIR := ../../src
-TESTS   := $(wildcard test_*.c)
-BINS    := $(TESTS:.c=)
+SRC_DIR      := ../../src
+CORE_SOURCES := $(SRC_DIR)/cpu.c
+
+TESTS := $(wildcard test_*.c)
+BINS  := $(TESTS:.c=)
 
 .PHONY: all test clean
 all: test
@@ -17,8 +19,8 @@ test: $(BINS)
 	done; \
 	if [ $$fails -ne 0 ]; then echo "$$fails failed"; exit 1; fi
 
-%: %.c
-	$(CC) $(CFLAGS) -o $@ $<
+%: %.c $(CORE_SOURCES)
+	$(CC) $(CFLAGS) -o $@ $< $(CORE_SOURCES)
 
 clean:
 	rm -f $(BINS)
