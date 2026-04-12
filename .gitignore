@@ -1,0 +1,24 @@
+*.o
+*.d
+*.a
+*.so
+*.dll
+*.dylib
+*.bc
+*.lib
+*.exp
+*.ilk
+*.pdb
+
+# Python
+tests/int/.venv/
+__pycache__/
+*.pyc
+
+# Build artifacts
+tia_libretro*
+
+# Editors
+.DS_Store
+*.swp
+*~
