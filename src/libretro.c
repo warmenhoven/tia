@@ -8,6 +8,10 @@
 
 #include "libretro.h"
 
+#ifndef CORE_VERSION
+#define CORE_VERSION "0+unknown"
+#endif
+
 #define FRAME_WIDTH  160
 #define FRAME_HEIGHT 210
 #define FRAME_PIXELS (FRAME_WIDTH * FRAME_HEIGHT)
@@ -73,7 +77,7 @@ void retro_get_system_info(struct retro_system_info *info)
 {
    memset(info, 0, sizeof(*info));
    info->library_name     = "tia";
-   info->library_version  = "0.0.1";
+   info->library_version  = CORE_VERSION;
    info->need_fullpath    = false;
    info->valid_extensions = "a26|bin";
    info->block_extract    = false;

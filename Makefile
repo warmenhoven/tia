@@ -33,10 +33,8 @@ else ifneq ($(findstring MINGW,$(shell uname -a)),)
 endif
 
 TARGET_NAME := tia
-GIT_VERSION ?= " $(shell git rev-parse --short HEAD || echo unknown)"
-ifneq ($(GIT_VERSION)," unknown")
-	CFLAGS += -DGIT_VERSION=\"$(GIT_VERSION)\"
-endif
+CORE_VERSION := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)+$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+CFLAGS += -DCORE_VERSION=\"$(CORE_VERSION)\"
 
 ifneq (,$(findstring msvc,$(platform)))
 LIBS :=
