@@ -2,7 +2,7 @@ CC     ?= cc
 CFLAGS ?= -O2 -g -Wall -Wextra -I../../src
 
 SRC_DIR      := ../../src
-CORE_SOURCES := $(SRC_DIR)/cpu.c $(SRC_DIR)/riot.c
+CORE_SOURCES := $(SRC_DIR)/cpu.c $(SRC_DIR)/riot.c $(SRC_DIR)/tia.c
 
 TESTS := $(wildcard test_*.c)
 BINS  := $(TESTS:.c=)
