@@ -22,7 +22,11 @@ void riot_init(struct riot *r)
     memset(r, 0, sizeof(*r));
     r->pa_in = 0xFF;
     r->pb_in = 0xFF;
-    r->prescaler_div = 1;
+    /* Power-on convention: prescaler in T1024T mode, timer with a non-zero
+     * "random-ish" value. Real hardware's power-on state is undefined; this
+     * approximation keeps timer-sensitive games from instantly underflowing. */
+    r->prescaler_div = 1024;
+    r->timer = 0x77;
     r->pa7_last = r->pa_in & 0x80;
 }
 

@@ -71,12 +71,13 @@ def test_core_renders_colubk(core_path):
         data = bytes(shot.data)
         w, h = shot.width, shot.height
         # Sample a pixel in the middle of the visible area (avoiding edges
-        # where HMOVE comb or late-settling effects could land).
+        # where HMOVE comb or late-settling effects could land). With the
+        # VBLANK border padding we ship, the center is well inside content.
         x, y = w // 2, h // 2
         off = (y * w + x) * 4
         r, g, b, a = data[off], data[off + 1], data[off + 2], data[off + 3]
-        assert (r, g, b) == (0xB0, 0x3C, 0x3C), \
-            f"expected COLUBK-rendered pixel at ({x},{y})=(0xB0,0x3C,0x3C), got ({r:#x},{g:#x},{b:#x})"
+        assert (r, g, b) == (0xB8, 0x32, 0x32), \
+            f"expected COLUBK pixel at ({x},{y})=(0xB8,0x32,0x32), got ({r:#x},{g:#x},{b:#x})"
 
 
 def test_different_colubk_produces_different_color(core_path):

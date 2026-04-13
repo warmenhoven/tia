@@ -23,6 +23,14 @@ struct tia {
     /* Frame delivery */
     uint32_t frame_number;
     bool     frame_ready;          /* set on VSYNC rising edge */
+    /* Stable per-frame visible region, updated on VSYNC rise. libretro reads
+     * these. 0xFFFF means "no VBLANK transition observed this frame." */
+    uint16_t visible_start;
+    uint16_t visible_end;
+    /* In-progress tracking for the current frame; promoted to visible_* on
+     * VSYNC rise. */
+    uint16_t _pending_vstart;
+    uint16_t _pending_vend;
 
     /* Sync and blanking */
     bool     vsync;
@@ -87,9 +95,9 @@ struct tia {
      * [4]=CXM0FB, [5]=CXM1FB, [6]=CXBLPF, [7]=CXPPMM. */
     uint8_t  cx[8];
 
-    /* Audio — Brenner/die-shot model (ported from Stella AudioChannel).
-     * Two channels, each a 5-bit "noise" shift register and a 4-bit
-     * "pulse" shift register with shift-and-invert update rule. */
+    /* Audio — Brenner die-shot-derived model (two channels, each a 5-bit
+     * "noise" shift register and a 4-bit "pulse" shift register with
+     * shift-and-invert update rule). */
     struct {
         uint8_t audc;              /* 4 bits */
         uint8_t audf;              /* 5 bits */

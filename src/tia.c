@@ -4,28 +4,28 @@
 #include <math.h>
 
 /* ============================================================
- *   NTSC palette — Stella-lineage 16 hues x 8 luma = 128 entries.
- *   TIA color registers store (hue<<4)|(luma<<1); low bit is unused,
- *   so index the palette with (reg >> 1) & 0x7F.
+ *   NTSC palette — standard 16-hue x 8-luma table. TIA color registers
+ *   store (hue<<4)|(luma<<1); low bit is unused, so index with
+ *   (reg >> 1) & 0x7F.
  * ============================================================ */
 
 const uint32_t tia_ntsc_palette[128] = {
-    0x000000, 0x404040, 0x6C6C6C, 0x909090, 0xB0B0B0, 0xC8C8C8, 0xDCDCDC, 0xECECEC,
-    0x444400, 0x646410, 0x848424, 0xA0A034, 0xB8B840, 0xD0D050, 0xE8E85C, 0xFCFC68,
-    0x702800, 0x844414, 0x985C28, 0xAC783C, 0xBC8C4C, 0xCCA05C, 0xDCB468, 0xECC878,
-    0x841800, 0x983418, 0xAC5030, 0xC06848, 0xD0805C, 0xE09470, 0xECA880, 0xFCBC94,
-    0x880000, 0x9C2020, 0xB03C3C, 0xC05858, 0xD07070, 0xE08888, 0xECA0A0, 0xFCB4B4,
-    0x78005C, 0x8C2074, 0xA03C88, 0xB0589C, 0xC070B0, 0xD084C0, 0xDC9CD0, 0xECB0E0,
-    0x480078, 0x602090, 0x783CA4, 0x8C58B8, 0xA070CC, 0xB484DC, 0xC49CEC, 0xD4B0FC,
-    0x140084, 0x302098, 0x4C3CAC, 0x6858C0, 0x7C70D0, 0x9488E0, 0xA89CEC, 0xBCB0FC,
-    0x000088, 0x1C209C, 0x3840B0, 0x505CC0, 0x6874D0, 0x7C8CE0, 0x90A4EC, 0xA4B8FC,
-    0x00187C, 0x1C3890, 0x3854A8, 0x5070BC, 0x6888CC, 0x7C9CDC, 0x90B4EC, 0xA4C8FC,
-    0x002C5C, 0x1C4C78, 0x386890, 0x5084AC, 0x689CC0, 0x7CB4D4, 0x90CCE8, 0xA4E0FC,
-    0x003C2C, 0x1C5C48, 0x387C64, 0x509C80, 0x68B494, 0x7CD0AC, 0x90E4C0, 0xA4FCD4,
-    0x003C00, 0x205C20, 0x407C40, 0x5C9C5C, 0x74B474, 0x8CD08C, 0xA4E4A4, 0xB8FCB8,
-    0x143800, 0x345C1C, 0x507C38, 0x6C9850, 0x84B468, 0x9CCC7C, 0xB4E490, 0xC8FCA4,
-    0x2C3000, 0x4C501C, 0x687034, 0x848C4C, 0x9CA864, 0xB4C078, 0xCCD488, 0xE0EC9C,
-    0x442800, 0x644818, 0x846830, 0xA08444, 0xB89C58, 0xD0B46C, 0xE8CC7C, 0xFCE08C
+    0x000000, 0x4A4A4A, 0x6F6F6F, 0x8E8E8E, 0xAAAAAA, 0xC0C0C0, 0xD6D6D6, 0xECECEC,
+    0x484800, 0x69690F, 0x86861D, 0xA2A22A, 0xBBBB35, 0xD2D240, 0xE8E84A, 0xFCFC54,
+    0x7C2C00, 0x904811, 0xA26221, 0xB47A30, 0xC3903D, 0xD2A44A, 0xDFB755, 0xECC860,
+    0x901C00, 0xA33915, 0xB55328, 0xC66C3A, 0xD5824A, 0xE39759, 0xF0AA67, 0xFCBC74,
+    0x940000, 0xA71A1A, 0xB83232, 0xC84848, 0xD65C5C, 0xE46F6F, 0xF08080, 0xFC9090,
+    0x840064, 0x97197A, 0xA8308F, 0xB846A2, 0xC659B3, 0xD46CC3, 0xE07CD2, 0xEC8CE0,
+    0x500084, 0x68199A, 0x7D30AD, 0x9246C0, 0xA459D0, 0xB56CE0, 0xC57CEE, 0xD48CFC,
+    0x140090, 0x331AA3, 0x4E32B5, 0x6848C6, 0x7F5CD5, 0x956FE3, 0xA980F0, 0xBC90FC,
+    0x000094, 0x181AA7, 0x2D32B8, 0x4248C8, 0x545CD6, 0x656FE4, 0x7580F0, 0x8490FC,
+    0x001C88, 0x183B9D, 0x2D57B0, 0x4272C2, 0x548AD2, 0x65A0E1, 0x75B5EF, 0x84C8FC,
+    0x003064, 0x185080, 0x2D6D98, 0x4288B0, 0x54A0C5, 0x65B7D9, 0x75CCEB, 0x84E0FC,
+    0x004030, 0x18624E, 0x2D8169, 0x429E82, 0x54B899, 0x65D1AE, 0x75E7C2, 0x84FCD4,
+    0x004400, 0x1A661A, 0x328432, 0x48A048, 0x5CBA5C, 0x6FD26F, 0x80E880, 0x90FC90,
+    0x143C00, 0x355F18, 0x527E2D, 0x6E9C42, 0x87B754, 0x9ED065, 0xB4E775, 0xC8FC84,
+    0x303800, 0x505916, 0x6D762B, 0x88923E, 0xA0AB4F, 0xB7C25F, 0xCCD86E, 0xE0EC7C,
+    0x482C00, 0x694D14, 0x866A26, 0xA28638, 0xBB9F47, 0xD2B656, 0xE8CC63, 0xFCE070
 };
 
 /* ============================================================
@@ -37,6 +37,13 @@ void tia_init(struct tia *t)
     int i;
     memset(t, 0, sizeof(*t));
     t->palette = tia_ntsc_palette;
+    /* 0xFFFF is the "not yet observed" sentinel. memset-0 would make the
+     * VBLANK handler's "only set if still 0xFFFF" guard reject the first
+     * latch, so the libretro layer would never see a real visible_start. */
+    t->visible_start = 0xFFFF;
+    t->visible_end   = 0xFFFF;
+    t->_pending_vstart = 0xFFFF;
+    t->_pending_vend   = 0xFFFF;
     /* DAC compression curve: v/30 through a saturating divider that models
      * the R-2R ladder loading with two channels summed. R_MAX = 30, R = 1. */
     for (i = 0; i <= 30; i++) {
@@ -55,6 +62,10 @@ void tia_reset(struct tia *t)
     t->scanline = 0;
     t->frame_number = 0;
     t->frame_ready = false;
+    t->visible_start = 0xFFFF;
+    t->visible_end   = 0xFFFF;
+    t->_pending_vstart = 0xFFFF;
+    t->_pending_vend   = 0xFFFF;
     t->vsync = false;
     t->vblank = false;
     t->rdy_asserted = false;
@@ -454,7 +465,16 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
     case 0x00: { /* VSYNC: bit 1 enables vertical sync pulse */
         bool new_vsync = (data & 0x02) != 0;
         if (new_vsync && !t->vsync) {
-            /* Rising edge: previous frame is complete, start new one. */
+            /* Rising edge: previous frame complete. Promote pending to
+             * libretro-visible fields, reset pending trackers. fb is NOT
+             * cleared between frames — stale content from the previous frame
+             * naturally fills any scanlines this frame didn't render (matches
+             * CRT persistence and avoids flashing "missing line" artifacts
+             * when the game's per-frame scanline count drifts by one). */
+            t->visible_start = t->_pending_vstart;
+            t->visible_end   = t->_pending_vend;
+            t->_pending_vstart = 0xFFFF;
+            t->_pending_vend   = 0xFFFF;
             t->frame_number++;
             t->frame_ready = true;
             t->scanline = 0;
@@ -462,10 +482,17 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
         t->vsync = new_vsync;
         break;
     }
-    case 0x01: /* VBLANK: bit 1 enables display blanking; bit 7 grounds INPT4/5 */
-        t->vblank       = (data & 0x02) != 0;
+    case 0x01: { /* VBLANK: bit 1 enables display blanking; bit 7 grounds INPT4/5 */
+        bool new_vblank = (data & 0x02) != 0;
+        if (!new_vblank && t->vblank && t->_pending_vstart == 0xFFFF)
+            t->_pending_vstart = t->scanline;
+        else if (new_vblank && !t->vblank && t->_pending_vstart != 0xFFFF &&
+                 t->_pending_vend == 0xFFFF)
+            t->_pending_vend = t->scanline;
+        t->vblank       = new_vblank;
         t->inpt_ground  = (data & 0x80) != 0;
         break;
+    }
     case 0x02: /* WSYNC strobe */
         t->rdy_asserted = true;
         break;

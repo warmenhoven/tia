@@ -18,7 +18,17 @@
 #endif
 
 #define FRAME_WIDTH       TIA_VISIBLE_WIDTH
-#define FRAME_HEIGHT      210            /* NTSC default visible lines */
+/* Nominal base height reported in retro_get_system_av_info. The actual
+ * shipped height is dynamic per-frame (visible_end - visible_start) so the
+ * frontend stretches game content to fill the display without us baking in
+ * black letterbox bars. The frontend receives updated geometry via the
+ * width/height args to video_cb. */
+#define FRAME_HEIGHT_NOMINAL 192
+/* Fallback shipped window used before the game has performed a VBLANK
+ * transition (cold boot / a few frames of boot where visible_start is still
+ * the 0xFFFF sentinel). */
+#define SHIP_OFFSET_FALLBACK 30
+#define SHIP_HEIGHT_FALLBACK 192
 #define MAX_CYCLES_PER_RUN 200000        /* safety cap if VSYNC never fires */
 #define AUDIO_BUF_MONO    1024
 
@@ -96,7 +106,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 {
     memset(info, 0, sizeof(*info));
     info->geometry.base_width   = FRAME_WIDTH;
-    info->geometry.base_height  = FRAME_HEIGHT;
+    info->geometry.base_height  = FRAME_HEIGHT_NOMINAL;
     info->geometry.max_width    = FRAME_WIDTH;
     info->geometry.max_height   = TIA_MAX_SCANLINES;
     info->geometry.aspect_ratio = 4.0f / 3.0f;
@@ -165,8 +175,23 @@ void retro_run(void)
     }
     sys.tia.frame_ready = false;
 
-    video_cb(sys.tia.fb, FRAME_WIDTH, FRAME_HEIGHT,
-             FRAME_WIDTH * sizeof(uint32_t));
+    {
+        uint16_t offset, height;
+        if (sys.tia.visible_start != 0xFFFF &&
+            sys.tia.visible_end   != 0xFFFF &&
+            sys.tia.visible_end   >  sys.tia.visible_start) {
+            offset = sys.tia.visible_start;
+            height = (uint16_t)(sys.tia.visible_end - sys.tia.visible_start);
+        } else {
+            offset = SHIP_OFFSET_FALLBACK;
+            height = SHIP_HEIGHT_FALLBACK;
+        }
+        if (offset + height > TIA_MAX_SCANLINES)
+            height = (uint16_t)(TIA_MAX_SCANLINES - offset);
+        video_cb(sys.tia.fb + (size_t)offset * FRAME_WIDTH,
+                 FRAME_WIDTH, height,
+                 FRAME_WIDTH * sizeof(uint32_t));
+    }
 
     {
         int16_t mono[AUDIO_BUF_MONO];

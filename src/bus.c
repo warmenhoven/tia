@@ -43,11 +43,25 @@ void bus_write(void *ctx, uint16_t addr, uint8_t data)
 {
     struct bus *b = (struct bus *)ctx;
     uint16_t a;
-    bus_tick_one_cycle(b);
-    /* Writes never stall on RDY (hardware behaviour). */
 
+    /* On real hardware, writes are latched on φ2 — within the CPU cycle,
+     * not after it. Model this by performing the write at clock 2 of 3:
+     * tick one TIA clock, apply the write, then tick the remaining two.
+     *
+     * Getting this right matters for STA WSYNC near the end of a scanline.
+     * If we ticked all 3 clocks before applying the write, a write on the
+     * last cycle of a scanline would cross the scanline wrap and re-assert
+     * RDY on the *next* scanline, burning an entire extra scanline of
+     * stall — visible as sprite stretching in games with tight flicker
+     * kernels (Adventure's dragon). */
+    tia_tick(b->tia);
+    tia_tick(b->tia);
+    /* Writes never stall on RDY (NMOS 6502 hardware behaviour). */
     a = (uint16_t)(addr & 0x1FFF);
-    if (a & 0x1000) { cart_write(b->cart, a, data); return; }
-    if (a & 0x0080) { riot_write(b->riot, a, data); return; }
-    tia_write(b->tia, a, data);
+    if (a & 0x1000)         cart_write(b->cart, a, data);
+    else if (a & 0x0080)    riot_write(b->riot, a, data);
+    else                    tia_write(b->tia, a, data);
+
+    tia_tick(b->tia);
+    riot_tick(b->riot);
 }
