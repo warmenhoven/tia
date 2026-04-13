@@ -107,6 +107,12 @@ struct tia {
     int16_t  audio_mix[31];        /* precomputed DAC compression (0..30) */
     int16_t  audio_buf[2048];      /* queued samples; drained by libretro */
     uint16_t audio_buf_len;
+
+    /* Input: 6 TIA input pins. Bit 7 of inpt[i] reflects the pin state.
+     * 0..3 = paddles (stubbed 0x80 until M11), 4..5 = joystick fire buttons.
+     * When inpt_ground (VBLANK bit 7) is set, INPT4/5 reads return 0. */
+    uint8_t  inpt[6];
+    bool     inpt_ground;
 };
 
 extern const uint32_t tia_ntsc_palette[128];

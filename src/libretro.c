@@ -118,14 +118,46 @@ void retro_reset(void)
     cpu_reset(&sys.cpu);
 }
 
+static int16_t js(unsigned port, unsigned id)
+{
+    return input_state_cb(port, RETRO_DEVICE_JOYPAD, 0, id);
+}
+
+static void poll_inputs(void)
+{
+    uint8_t pa = 0xFF;
+    uint8_t pb;
+    /* SWCHA: joystick directions, active-low. P0 in high nibble, P1 in low. */
+    if (js(0, RETRO_DEVICE_ID_JOYPAD_RIGHT)) pa &= (uint8_t)~0x80;
+    if (js(0, RETRO_DEVICE_ID_JOYPAD_LEFT))  pa &= (uint8_t)~0x40;
+    if (js(0, RETRO_DEVICE_ID_JOYPAD_DOWN))  pa &= (uint8_t)~0x20;
+    if (js(0, RETRO_DEVICE_ID_JOYPAD_UP))    pa &= (uint8_t)~0x10;
+    if (js(1, RETRO_DEVICE_ID_JOYPAD_RIGHT)) pa &= (uint8_t)~0x08;
+    if (js(1, RETRO_DEVICE_ID_JOYPAD_LEFT))  pa &= (uint8_t)~0x04;
+    if (js(1, RETRO_DEVICE_ID_JOYPAD_DOWN))  pa &= (uint8_t)~0x02;
+    if (js(1, RETRO_DEVICE_ID_JOYPAD_UP))    pa &= (uint8_t)~0x01;
+    sys.riot.pa_in = pa;
+
+    /* SWCHB: console switches. Bits 0,1 = Reset/Select (active-low);
+     * bit 3 = Color (1 = Color); bits 6,7 = Difficulty L/R (1 = A/pro).
+     * Defaults: Color + Diff B/B, unused bits 2,4,5 high. */
+    pb = 0x3B;
+    if (js(0, RETRO_DEVICE_ID_JOYPAD_START))  pb &= (uint8_t)~0x01;
+    if (js(0, RETRO_DEVICE_ID_JOYPAD_SELECT)) pb &= (uint8_t)~0x02;
+    sys.riot.pb_in = pb;
+
+    /* INPT4/5: joystick fire buttons (bit 7 only; rest are 0). */
+    sys.tia.inpt[4] = js(0, RETRO_DEVICE_ID_JOYPAD_B) ? 0x00 : 0x80;
+    sys.tia.inpt[5] = js(1, RETRO_DEVICE_ID_JOYPAD_B) ? 0x00 : 0x80;
+}
+
 void retro_run(void)
 {
     int cycles = 0;
     if (!sys.loaded) return;
 
     input_poll_cb();
-    /* TODO (M9): map libretro input to sys.riot.pa_in/pb_in. For now, all inputs
-     * remain at their init default (0xFF = no buttons pressed, active-low). */
+    poll_inputs();
 
     while (!sys.tia.frame_ready && !sys.cpu.halted && cycles < MAX_CYCLES_PER_RUN) {
         cpu_step(&sys.cpu);
@@ -164,6 +196,25 @@ bool retro_load_game(const struct retro_game_info *info)
         log_cb(RETRO_LOG_ERROR, "Unsupported ROM size %zu (only 2048 or 4096).\n",
                info->size);
         return false;
+    }
+
+    {
+        static const struct retro_input_descriptor desc[] = {
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Up" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Down" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Left" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "Right" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "Fire" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Reset" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+            { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Up" },
+            { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Down" },
+            { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Left" },
+            { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "Right" },
+            { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "Fire" },
+            { 0, 0, 0, 0, NULL }
+        };
+        environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, (void *)desc);
     }
 
     tia_init(&sys.tia);

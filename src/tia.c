@@ -44,6 +44,8 @@ void tia_init(struct tia *t)
         double s = 32767.0 * (v / 30.0) * (30.0 + 30.0) / (30.0 + v);
         t->audio_mix[i] = (int16_t)floor(s);
     }
+    /* Input pins float high when nothing is connected / no button pressed. */
+    for (i = 0; i < 6; i++) t->inpt[i] = 0x80;
 }
 
 void tia_reset(struct tia *t)
@@ -85,6 +87,11 @@ void tia_reset(struct tia *t)
     t->audio_sum[0] = t->audio_sum[1] = 0;
     t->audio_sum_ct = 0;
     t->audio_buf_len = 0;
+    {
+        int i;
+        for (i = 0; i < 6; i++) t->inpt[i] = 0x80;
+    }
+    t->inpt_ground = false;
 }
 
 /* ============================================================
@@ -433,7 +440,12 @@ uint8_t tia_read(struct tia *t, uint16_t addr)
     /* A3:A0 selects the read register. $00-$07: collisions; $08-$0D: INPT. */
     uint8_t sel = (uint8_t)(addr & 0x0F);
     if (sel < 8) return t->cx[sel];
-    return 0;  /* INPT stub until M9 */
+    if (sel < 0x0E) {
+        /* INPT4/5 are force-grounded by VBLANK bit 7. */
+        if (t->inpt_ground && sel >= 0x0C) return 0;
+        return t->inpt[sel - 8];
+    }
+    return 0;
 }
 
 void tia_write(struct tia *t, uint16_t addr, uint8_t data)
@@ -450,8 +462,9 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
         t->vsync = new_vsync;
         break;
     }
-    case 0x01: /* VBLANK: bit 1 enables blanking */
-        t->vblank = (data & 0x02) != 0;
+    case 0x01: /* VBLANK: bit 1 enables display blanking; bit 7 grounds INPT4/5 */
+        t->vblank       = (data & 0x02) != 0;
+        t->inpt_ground  = (data & 0x80) != 0;
         break;
     case 0x02: /* WSYNC strobe */
         t->rdy_asserted = true;
@@ -540,8 +553,8 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
 
 size_t tia_serialize_size(void)
 {
-    /* M3a/b(20) + player(13) + m/b(14) + hmove(1) + cx(8) + audio(26) */
-    return 20 + 13 + 14 + 1 + 8 + 26;
+    /* M3a/b(20) + player(13) + m/b(14) + hmove(1) + cx(8) + audio(26) + input(7) */
+    return 20 + 13 + 14 + 1 + 8 + 26 + 7;
 }
 
 void tia_serialize(const struct tia *t, void *buf)
@@ -621,6 +634,12 @@ void tia_serialize(const struct tia *t, void *buf)
         /* Sample queue is transient; don't serialize. */
         /* 26 bytes total: 7*2 + 6 + 6 padding = 20 used, 6 reserved */
         *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0;
+        /* Input (7 bytes): inpt[0..5] + ground flag. */
+        {
+            int i;
+            for (i = 0; i < 6; i++) *q++ = t->inpt[i];
+            *q++ = (uint8_t)(t->inpt_ground ? 1 : 0);
+        }
     }
 }
 
@@ -698,6 +717,13 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
         t->audio_sum[0] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum[1] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum_ct = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
+    }
+    /* Input: 6 inpt bytes + ground flag = 7 bytes. Located at offset 78. */
+    {
+        const uint8_t *ip = (const uint8_t *)buf + 78;
+        int i;
+        for (i = 0; i < 6; i++) t->inpt[i] = ip[i];
+        t->inpt_ground = ip[6] != 0;
     }
     return true;
 }
