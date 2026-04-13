@@ -182,24 +182,40 @@ static int test_f4_loads_and_switches(void)
  *   E0 (8K Parker Bros) — 3 × 1K slots + fixed 1K
  * ============================================================ */
 
-static int test_e0_detection_and_fixed_slot(void)
+/* Build an 8K ROM where bytes encode their bank (per-1K, per-2K, per-4K
+ * depending on mapper) plus offset-within-bank, and drop a minimal reset
+ * routine in bank 7 that writes to an E0 hotspot. The probe-based detector
+ * runs this reset code and sees the hotspot, so the test exercises the
+ * real detection path instead of planting a byte-pattern. */
+static void build_8k_rom_with_e0_boot(uint8_t *rom, int hotspot_lo)
 {
-    struct cart c;
-    uint8_t rom[8192];
     int i;
-    /* Fill with per-slot-recognisable bytes: bank b, byte i → b<<5 | (i&0x1F) */
     for (i = 0; i < 8192; i++) {
         int bank = i / 1024;
         rom[i] = (uint8_t)((bank << 5) | (i & 0x1F));
     }
-    /* Plant an E0 hotspot STA pattern so our detector fires */
-    rom[0x100] = 0x8D; rom[0x101] = 0xE0; rom[0x102] = 0x1F;
+    /* Boot at $FC00 (slot 3 start). SEI; CLD; LDX #$FF; TXS; STA $1FExx;
+     * JMP to self. Keeps the CPU running but quickly hits the hotspot. */
+    rom[0x1C00] = 0x78;                                 /* SEI */
+    rom[0x1C01] = 0xD8;                                 /* CLD */
+    rom[0x1C02] = 0xA2; rom[0x1C03] = 0xFF;             /* LDX #$FF */
+    rom[0x1C04] = 0x9A;                                 /* TXS */
+    rom[0x1C05] = 0x8D; rom[0x1C06] = (uint8_t)hotspot_lo; rom[0x1C07] = 0x1F;
+    rom[0x1C08] = 0x4C; rom[0x1C09] = 0x08; rom[0x1C0A] = 0xFC;  /* JMP $FC08 */
+    rom[0x1FFC] = 0x00; rom[0x1FFD] = 0xFC;             /* reset vec → $FC00 */
+}
 
+static int test_e0_detection_and_fixed_slot(void)
+{
+    struct cart c;
+    uint8_t rom[8192];
+    build_8k_rom_with_e0_boot(rom, 0xE0);
     ASSERT_TRUE(cart_load(&c, rom, 8192));
     ASSERT_EQ(c.mapper, CART_MAPPER_E0);
-
-    /* Slot 3 ($F C00..$FFFF) is hardwired to bank 7 */
-    ASSERT_EQ(cart_read(&c, 0x0C00), (7 << 5));
+    /* Slot 3 ($FC00-$FFFF) is hardwired to bank 7. Read past the boot code
+     * we planted at the start of bank 7 so we see the fill pattern: offset
+     * 0x20 in bank 7 → byte (7<<5) | (0x20 & 0x1F) = 0xE0. */
+    ASSERT_EQ(cart_read(&c, 0x0C20), (7 << 5));
     return 0;
 }
 
@@ -207,12 +223,7 @@ static int test_e0_slot_switching(void)
 {
     struct cart c;
     uint8_t rom[8192];
-    int i;
-    for (i = 0; i < 8192; i++) {
-        int bank = i / 1024;
-        rom[i] = (uint8_t)((bank << 5) | (i & 0x1F));
-    }
-    rom[0x100] = 0x8D; rom[0x101] = 0xE0; rom[0x102] = 0x1F;
+    build_8k_rom_with_e0_boot(rom, 0xE0);
     cart_load(&c, rom, 8192);
 
     /* Slot 0 hotspots $1FE0..$1FE7 select bank 0..7 for $F000-$F3FF */

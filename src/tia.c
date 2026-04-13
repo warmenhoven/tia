@@ -448,15 +448,25 @@ void tia_tick(struct tia *t)
 
 uint8_t tia_read(struct tia *t, uint16_t addr)
 {
-    /* A3:A0 selects the read register. $00-$07: collisions; $08-$0D: INPT. */
-    uint8_t sel = (uint8_t)(addr & 0x0F);
-    if (sel < 8) return t->cx[sel];
+    /* A3:A0 selects the read register. $00-$07: collisions (bits 7-6 only);
+     * $08-$0D: INPT0-5 (bit 7 only); $0E-$3F: undefined.
+     *
+     * For the "undefined" bits, real hardware leaves the data bus floating,
+     * so the CPU sees whatever was last driven on it — for zero-page reads
+     * that's the low byte of the address. Games like Haunted House do
+     * `SBC $0F` (a TIA write-only register) and rely on this floating bus
+     * behaviour to make the SBC actually decrement the accumulator. Returning
+     * 0 deadlocks them in their boot loop. */
+    uint8_t sel  = (uint8_t)(addr & 0x0F);
+    uint8_t lobs = (uint8_t)(addr & 0x3F);   /* address low used as bus filler */
+    if (sel < 8)
+        return (uint8_t)((t->cx[sel] & 0xC0) | lobs);
     if (sel < 0x0E) {
         /* INPT4/5 are force-grounded by VBLANK bit 7. */
-        if (t->inpt_ground && sel >= 0x0C) return 0;
-        return t->inpt[sel - 8];
+        uint8_t v = (t->inpt_ground && sel >= 0x0C) ? 0 : t->inpt[sel - 8];
+        return (uint8_t)((v & 0x80) | (lobs & 0x7F));
     }
-    return 0;
+    return (uint8_t)(addr & 0xFF);
 }
 
 void tia_write(struct tia *t, uint16_t addr, uint8_t data)

@@ -19,6 +19,7 @@
 
 void riot_init(struct riot *r)
 {
+    int i;
     memset(r, 0, sizeof(*r));
     r->pa_in = 0xFF;
     r->pb_in = 0xFF;
@@ -28,6 +29,21 @@ void riot_init(struct riot *r)
     r->prescaler_div = 1024;
     r->timer = 0x77;
     r->pa7_last = r->pa_in & 0x80;
+    /* Real 6532 RAM is undefined at cold boot — the cells settle into a
+     * noisy pattern of 1s and 0s, not a clean zero. A handful of games
+     * rely on this: Yars' Revenge famously uses uninitialised RAM as the
+     * seed for its "Neutral Zone" static effect and renders a near-blank
+     * title without it. We use a deterministic pseudo-random pattern
+     * rather than true randomness so that two cold boots of the same
+     * ROM produce identical output (stable screenshots, reproducible
+     * unit tests, replayable input recordings). */
+    for (i = 0; i < 128; i++) {
+        /* Small xorshift mix; constants chosen to spread all 256 values
+         * across the 128 bytes with no long zero stretches. */
+        unsigned x = (unsigned)(i * 0x9E + 0x5B);
+        x ^= x >> 3;
+        r->ram[i] = (uint8_t)(x & 0xFF);
+    }
 }
 
 void riot_reset(struct riot *r)

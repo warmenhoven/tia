@@ -143,7 +143,11 @@ static int test_cxclr_clears_all(void)
     tia_write(&t, 0x2C, 0);              /* CXCLR */
     {
         int i;
-        for (i = 0; i < 8; i++) ASSERT_EQ(tia_read(&t, (uint16_t)i), 0);
+        /* After CXCLR, bits 7-6 (collision flags) are zero; bits 5-0 are
+         * the floating bus = low 6 bits of the read address (which equals
+         * `i` here since i < 8). Expect exact value (0 in bits 7-6) | i. */
+        for (i = 0; i < 8; i++)
+            ASSERT_EQ(tia_read(&t, (uint16_t)i), (uint16_t)i);
     }
     return 0;
 }
