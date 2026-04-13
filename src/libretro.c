@@ -42,12 +42,32 @@ static retro_input_state_t        input_state_cb;
 static struct retro_log_callback  logging;
 static retro_log_printf_t         log_cb;
 
+/* Controller device codes. Paddles and driving are subclasses of ANALOG so
+ * the frontend can show them in its core-option menu. The keypad uses the
+ * stock RETRO_DEVICE_KEYBOARD. */
+#define DEV_JOYPAD  RETRO_DEVICE_JOYPAD
+#define DEV_PADDLE  RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_ANALOG, 0)
+#define DEV_DRIVING RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_ANALOG, 1)
+#define DEV_KEYPAD  RETRO_DEVICE_KEYBOARD
+
+/* Paddle capacitor charge at maximum rotation, in TIA color clocks. Real
+ * HW takes roughly one NTSC frame (~59,736 clocks) for the pot's RC
+ * network to cross the comparator threshold. We use a slightly generous
+ * value so games that expect the full-range dump have headroom. */
+#define PADDLE_CHARGE_MAX_CLOCKS 65000u
+
+/* Gray code for driving controller output on SWCHA bits 5:4 (P0) or 1:0
+ * (P1). Turning the wheel advances through this table in one direction
+ * or the other; games infer direction from the transition pattern. */
+static const uint8_t driving_gray[4] = { 0x00, 0x01, 0x03, 0x02 };
+
 static struct {
     struct cpu  cpu;
     struct tia  tia;
     struct riot riot;
     struct cart cart;
     struct bus  bus;
+    unsigned    port_device[2];
     bool        loaded;
 } sys;
 
@@ -64,12 +84,22 @@ unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
 void retro_set_environment(retro_environment_t cb)
 {
-    static const struct retro_controller_description controllers[] = {
-        { "Joystick", RETRO_DEVICE_JOYPAD },
+    /* Port 0 advertises every 2600 controller type; port 1 omits the
+     * single-port-only Driving controller (Indy 500 uses only P0). */
+    static const struct retro_controller_description p0_ctrls[] = {
+        { "Joystick", DEV_JOYPAD  },
+        { "Paddles",  DEV_PADDLE  },
+        { "Driving",  DEV_DRIVING },
+        { "Keypad",   DEV_KEYPAD  },
+    };
+    static const struct retro_controller_description p1_ctrls[] = {
+        { "Joystick", DEV_JOYPAD  },
+        { "Paddles",  DEV_PADDLE  },
+        { "Keypad",   DEV_KEYPAD  },
     };
     static const struct retro_controller_info ports[] = {
-        { controllers, 1 },
-        { controllers, 1 },
+        { p0_ctrls, 4 },
+        { p1_ctrls, 3 },
         { NULL, 0 },
     };
 
@@ -89,7 +119,12 @@ void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_c
 void retro_set_input_poll(retro_input_poll_t cb)             { input_poll_cb = cb; }
 void retro_set_input_state(retro_input_state_t cb)           { input_state_cb = cb; }
 
-void retro_init(void)  { memset(&sys, 0, sizeof(sys)); }
+void retro_init(void)
+{
+    memset(&sys, 0, sizeof(sys));
+    sys.port_device[0] = DEV_JOYPAD;
+    sys.port_device[1] = DEV_JOYPAD;
+}
 void retro_deinit(void) { }
 
 void retro_get_system_info(struct retro_system_info *info)
@@ -116,8 +151,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
-    (void)port;
-    (void)device;
+    if (port < 2) sys.port_device[port] = device;
 }
 
 void retro_reset(void)
@@ -133,32 +167,151 @@ static int16_t js(unsigned port, unsigned id)
     return input_state_cb(port, RETRO_DEVICE_JOYPAD, 0, id);
 }
 
+static int16_t ax(unsigned port, unsigned idx, unsigned id)
+{
+    return input_state_cb(port, RETRO_DEVICE_ANALOG, idx, id);
+}
+
+/* Set `pa` nibble for port `port` (high nibble if port==0, low if port==1)
+ * from a joystick's direction bits + fire. 4 bits active-low. */
+static uint8_t pa_bits_joypad(uint8_t pa, unsigned port)
+{
+    unsigned shift = (port == 0) ? 4 : 0;
+    if (js(port, RETRO_DEVICE_ID_JOYPAD_RIGHT)) pa &= (uint8_t)~(0x08u << shift);
+    if (js(port, RETRO_DEVICE_ID_JOYPAD_LEFT))  pa &= (uint8_t)~(0x04u << shift);
+    if (js(port, RETRO_DEVICE_ID_JOYPAD_DOWN))  pa &= (uint8_t)~(0x02u << shift);
+    if (js(port, RETRO_DEVICE_ID_JOYPAD_UP))    pa &= (uint8_t)~(0x01u << shift);
+    return pa;
+}
+
+/* Paddle mode: two paddles per port share SWCHA's direction bits for their
+ * fire triggers. Layout per nibble: paddle-A trigger = bit 3 of nibble
+ * (where joystick RIGHT lived), paddle-B trigger = bit 2 (joystick LEFT).
+ * Bits 1,0 (DOWN/UP) stay high. Map RETRO A button to paddle-A fire and
+ * RETRO B button to paddle-B fire so the common case — one-paddle games
+ * like Kaboom — works from either A or B. */
+static uint8_t pa_bits_paddle(uint8_t pa, unsigned port)
+{
+    unsigned shift = (port == 0) ? 4 : 0;
+    int fire_a = js(port, RETRO_DEVICE_ID_JOYPAD_A)
+              || js(port, RETRO_DEVICE_ID_JOYPAD_R);
+    int fire_b = js(port, RETRO_DEVICE_ID_JOYPAD_B)
+              || js(port, RETRO_DEVICE_ID_JOYPAD_L);
+    if (fire_a) pa &= (uint8_t)~(0x08u << shift);
+    if (fire_b) pa &= (uint8_t)~(0x04u << shift);
+    return pa;
+}
+
+/* Convert a libretro analog axis [-32768, 32767] to a paddle charge-target
+ * in TIA color clocks. 0 resistance (fully left) yields a 0-clock charge
+ * (bit 7 flips high immediately). Max resistance (fully right) takes
+ * PADDLE_CHARGE_MAX_CLOCKS clocks. */
+static uint16_t paddle_charge_from_axis(int16_t axis)
+{
+    int v = axis + 32768;                  /* 0..65535 */
+    unsigned long scaled = (unsigned long)v * PADDLE_CHARGE_MAX_CLOCKS / 65536ul;
+    if (scaled > 0xFFFF) scaled = 0xFFFF;
+    return (uint16_t)scaled;
+}
+
+/* Driving controller (Indy 500, P0 only). Libretro analog X is mapped to
+ * a continuous rotation, and SWCHA bits 5:4 are set to the Gray code of
+ * the current step. The game infers direction from bit-pair transitions,
+ * not from absolute position. */
+static uint8_t pa_bits_driving(uint8_t pa)
+{
+    int16_t axis = ax(0, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+    /* 4 Gray-code steps per full libretro sweep. Multiply by a larger
+     * factor to get one step per small wheel twitch; 64 here means the
+     * full [-32768, 32767] range advances the wheel through 128 clicks,
+     * which feels reasonable for Indy 500's steering sensitivity. */
+    unsigned step = ((unsigned)(axis + 32768) / 512u) & 3u;
+    uint8_t gray  = driving_gray[step];     /* bits 0:1 = gray pair */
+    /* Drop the current bits 4,5 and overlay gray pair there. */
+    pa &= (uint8_t)~0x30u;
+    pa |= (uint8_t)((gray & 1u) << 4) | (uint8_t)(((gray >> 1) & 1u) << 5);
+    return pa;
+}
+
 static void poll_inputs(void)
 {
     uint8_t pa = 0xFF;
     uint8_t pb;
-    /* SWCHA: joystick directions, active-low. P0 in high nibble, P1 in low. */
-    if (js(0, RETRO_DEVICE_ID_JOYPAD_RIGHT)) pa &= (uint8_t)~0x80;
-    if (js(0, RETRO_DEVICE_ID_JOYPAD_LEFT))  pa &= (uint8_t)~0x40;
-    if (js(0, RETRO_DEVICE_ID_JOYPAD_DOWN))  pa &= (uint8_t)~0x20;
-    if (js(0, RETRO_DEVICE_ID_JOYPAD_UP))    pa &= (uint8_t)~0x10;
-    if (js(1, RETRO_DEVICE_ID_JOYPAD_RIGHT)) pa &= (uint8_t)~0x08;
-    if (js(1, RETRO_DEVICE_ID_JOYPAD_LEFT))  pa &= (uint8_t)~0x04;
-    if (js(1, RETRO_DEVICE_ID_JOYPAD_DOWN))  pa &= (uint8_t)~0x02;
-    if (js(1, RETRO_DEVICE_ID_JOYPAD_UP))    pa &= (uint8_t)~0x01;
+    unsigned p;
+
+    /* SWCHA: each port contributes a nibble. High nibble (bits 4-7) = port 0,
+     * low nibble (bits 0-3) = port 1. Active-low throughout. */
+    for (p = 0; p < 2; p++) {
+        switch (sys.port_device[p]) {
+        case DEV_PADDLE:
+            pa = pa_bits_paddle(pa, p);
+            break;
+        case DEV_DRIVING:
+            /* Driving is P0-only. On port 1 it falls back to joypad. */
+            if (p == 0) pa = pa_bits_driving(pa);
+            else        pa = pa_bits_joypad(pa, p);
+            break;
+        case DEV_KEYPAD:
+            /* TODO: keypad matrix scan — requires wiring tia_read to riot
+             * state, deferred to a follow-up task. For now: all bits high. */
+            break;
+        case DEV_JOYPAD:
+        default:
+            pa = pa_bits_joypad(pa, p);
+            break;
+        }
+    }
     sys.riot.pa_in = pa;
 
     /* SWCHB: console switches. Bits 0,1 = Reset/Select (active-low);
      * bit 3 = Color (1 = Color); bits 6,7 = Difficulty L/R (1 = A/pro).
-     * Defaults: Color + Diff B/B, unused bits 2,4,5 high. */
+     * Defaults: Color + Diff B/B, unused bits 2,4,5 high. Read from port 0
+     * joypad regardless of active controller — console switches are on the
+     * console itself, not the controller. */
     pb = 0x3B;
     if (js(0, RETRO_DEVICE_ID_JOYPAD_START))  pb &= (uint8_t)~0x01;
     if (js(0, RETRO_DEVICE_ID_JOYPAD_SELECT)) pb &= (uint8_t)~0x02;
     sys.riot.pb_in = pb;
 
-    /* INPT4/5: joystick fire buttons (bit 7 only; rest are 0). */
-    sys.tia.inpt[4] = js(0, RETRO_DEVICE_ID_JOYPAD_B) ? 0x00 : 0x80;
-    sys.tia.inpt[5] = js(1, RETRO_DEVICE_ID_JOYPAD_B) ? 0x00 : 0x80;
+    /* INPT4/5: joystick/driving fire buttons (bit 7 only; rest are 0).
+     * Paddles don't use INPT4/5 (their triggers are on SWCHA). */
+    for (p = 0; p < 2; p++) {
+        unsigned idx = 4 + p;
+        switch (sys.port_device[p]) {
+        case DEV_PADDLE:
+            sys.tia.inpt[idx] = 0x80;       /* unused in paddle mode */
+            break;
+        case DEV_DRIVING:
+            sys.tia.inpt[idx] = (p == 0 && js(p, RETRO_DEVICE_ID_JOYPAD_B))
+                              ? 0x00 : 0x80;
+            break;
+        case DEV_JOYPAD:
+        default:
+            sys.tia.inpt[idx] = js(p, RETRO_DEVICE_ID_JOYPAD_B) ? 0x00 : 0x80;
+            break;
+        }
+    }
+
+    /* INPT0-3: paddle potentiometer capacitor dumps. Each port contributes
+     * two paddles (A = LEFT stick X, B = RIGHT stick X) when in paddle
+     * mode; otherwise the charge target is 0 so bit 7 stays high. */
+    {
+        unsigned slot = 0;
+        for (p = 0; p < 2; p++) {
+            if (sys.port_device[p] == DEV_PADDLE) {
+                int16_t a_axis = ax(p, RETRO_DEVICE_INDEX_ANALOG_LEFT,
+                                       RETRO_DEVICE_ID_ANALOG_X);
+                int16_t b_axis = ax(p, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
+                                       RETRO_DEVICE_ID_ANALOG_X);
+                sys.tia.paddle_charge_max[slot + 0] = paddle_charge_from_axis(a_axis);
+                sys.tia.paddle_charge_max[slot + 1] = paddle_charge_from_axis(b_axis);
+            } else {
+                sys.tia.paddle_charge_max[slot + 0] = 0;
+                sys.tia.paddle_charge_max[slot + 1] = 0;
+            }
+            slot += 2;
+        }
+    }
 }
 
 void retro_run(void)

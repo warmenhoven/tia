@@ -101,6 +101,10 @@ void tia_reset(struct tia *t)
     {
         int i;
         for (i = 0; i < 6; i++) t->inpt[i] = 0x80;
+        for (i = 0; i < 4; i++) {
+            t->paddle_charge_max[i] = 0;
+            t->paddle_charge_cnt[i] = 0;
+        }
     }
     t->inpt_ground = false;
 }
@@ -415,6 +419,26 @@ void tia_tick(struct tia *t)
     if (t->resmp0) t->m0_pos = (int16_t)((int)t->p0_pos + 4);
     if (t->resmp1) t->m1_pos = (int16_t)((int)t->p1_pos + 4);
 
+    /* Paddle capacitor charge. While VBLANK bit 7 is set (inpt_ground),
+     * the caps are shorted to ground, so bit 7 of INPT0-3 stays low and
+     * the countdown resets to the target charge time. Once VBLANK bit 7
+     * clears, each cap charges through its paddle's pot resistance; when
+     * the count hits zero, the comparator flips the corresponding INPT's
+     * bit 7 high. */
+    {
+        int i;
+        for (i = 0; i < 4; i++) {
+            if (t->inpt_ground) {
+                t->inpt[i] = (uint8_t)(t->inpt[i] & 0x7F);
+                t->paddle_charge_cnt[i] = t->paddle_charge_max[i];
+            } else if (t->paddle_charge_cnt[i] > 0) {
+                t->paddle_charge_cnt[i]--;
+                if (t->paddle_charge_cnt[i] == 0)
+                    t->inpt[i] = (uint8_t)(t->inpt[i] | 0x80);
+            }
+        }
+    }
+
     /* Render current pixel if in visible region and nothing is blanking it. */
     if (t->hpos >= TIA_HBLANK_CLOCKS &&
         !t->vblank && !t->vsync &&
@@ -590,8 +614,9 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
 
 size_t tia_serialize_size(void)
 {
-    /* M3a/b(20) + player(13) + m/b(14) + hmove(1) + cx(8) + audio(26) + input(7) */
-    return 20 + 13 + 14 + 1 + 8 + 26 + 7;
+    /* M3a/b(20) + player(13) + m/b(14) + hmove(1) + cx(8) + audio(26) +
+     * input(7) + paddle_state(16: 4*2 max + 4*2 cnt) = 105 */
+    return 20 + 13 + 14 + 1 + 8 + 26 + 7 + 16;
 }
 
 void tia_serialize(const struct tia *t, void *buf)
@@ -676,6 +701,15 @@ void tia_serialize(const struct tia *t, void *buf)
             int i;
             for (i = 0; i < 6; i++) *q++ = t->inpt[i];
             *q++ = (uint8_t)(t->inpt_ground ? 1 : 0);
+            /* Paddle state: 4 × (max lo/hi) then 4 × (cnt lo/hi). */
+            for (i = 0; i < 4; i++) {
+                *q++ = (uint8_t)(t->paddle_charge_max[i] & 0xFF);
+                *q++ = (uint8_t)(t->paddle_charge_max[i] >> 8);
+            }
+            for (i = 0; i < 4; i++) {
+                *q++ = (uint8_t)(t->paddle_charge_cnt[i] & 0xFF);
+                *q++ = (uint8_t)(t->paddle_charge_cnt[i] >> 8);
+            }
         }
     }
 }
@@ -755,12 +789,21 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
         t->audio_sum[1] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum_ct = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
     }
-    /* Input: 6 inpt bytes + ground flag = 7 bytes. Located at offset 78. */
+    /* Input: 7 bytes inpt state + 16 bytes paddle state. Located at offset 78. */
     {
         const uint8_t *ip = (const uint8_t *)buf + 78;
         int i;
         for (i = 0; i < 6; i++) t->inpt[i] = ip[i];
         t->inpt_ground = ip[6] != 0;
+        ip += 7;
+        for (i = 0; i < 4; i++) {
+            t->paddle_charge_max[i] = (uint16_t)(ip[0] | ((uint16_t)ip[1] << 8));
+            ip += 2;
+        }
+        for (i = 0; i < 4; i++) {
+            t->paddle_charge_cnt[i] = (uint16_t)(ip[0] | ((uint16_t)ip[1] << 8));
+            ip += 2;
+        }
     }
     return true;
 }

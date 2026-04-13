@@ -63,6 +63,64 @@ static int test_paddle_inpt_default(void)
     return 0;
 }
 
+/* --- Paddle capacitor dynamics ---
+ * INPT0-3 bit 7 starts low after the VBLANK-bit-7 ground is released, and
+ * flips high once the pot's RC has charged the cap to the comparator's
+ * threshold. We model charge time in TIA color clocks; while the ground
+ * is held the counter stays at the target. */
+
+static int test_paddle_cap_charges_to_high(void)
+{
+    struct tia t;
+    int i;
+    tia_init(&t);
+    t.paddle_charge_max[0] = 5;             /* 5 TIA clocks */
+    t.inpt_ground = true;                   /* cap grounded */
+    for (i = 0; i < 10; i++) tia_tick(&t);
+    /* While grounded: bit 7 stays low, cnt stays at 5. */
+    ASSERT_EQ(t.inpt[0] & 0x80, 0x00);
+    ASSERT_EQ(t.paddle_charge_cnt[0], 5);
+
+    t.inpt_ground = false;                  /* release: start charging */
+    for (i = 0; i < 4; i++) tia_tick(&t);   /* 4 clocks of the 5-clock RC */
+    ASSERT_EQ(t.inpt[0] & 0x80, 0x00);      /* not yet past threshold */
+    ASSERT_EQ(t.paddle_charge_cnt[0], 1);
+    tia_tick(&t);                            /* 5th clock: cnt→0, flip bit 7 */
+    ASSERT_EQ(t.inpt[0] & 0x80, 0x80);
+    ASSERT_EQ(t.paddle_charge_cnt[0], 0);
+    return 0;
+}
+
+static int test_paddle_reground_resets_cap(void)
+{
+    struct tia t;
+    int i;
+    tia_init(&t);
+    t.paddle_charge_max[1] = 3;
+    t.inpt_ground = false;
+    for (i = 0; i < 5; i++) tia_tick(&t);    /* charges past threshold */
+    ASSERT_EQ(t.inpt[1] & 0x80, 0x80);
+
+    t.inpt_ground = true;                    /* re-ground the cap */
+    tia_tick(&t);
+    ASSERT_EQ(t.inpt[1] & 0x80, 0x00);       /* bit 7 clears immediately */
+    ASSERT_EQ(t.paddle_charge_cnt[1], 3);    /* cnt reset to target */
+    return 0;
+}
+
+static int test_paddle_zero_charge_is_immediate(void)
+{
+    struct tia t;
+    tia_init(&t);
+    t.paddle_charge_max[2] = 0;              /* full-left paddle = 0 resistance */
+    t.inpt_ground = false;
+    /* Cap is "already charged" when max == 0. We only flip bit 7 on a
+     * cnt→0 transition inside tia_tick, so the pre-existing 0x80 from
+     * tia_init is what games see immediately after release. */
+    ASSERT_EQ(t.inpt[2] & 0x80, 0x80);
+    return 0;
+}
+
 /* --- Serialize round-trip includes input state --- */
 
 static int test_serialize_input(void)
@@ -76,6 +134,9 @@ static int test_serialize_input(void)
     a.inpt[4] = 0x00;
     a.inpt[5] = 0x80;
     a.inpt_ground = true;
+    a.paddle_charge_max[0] = 1234;
+    a.paddle_charge_cnt[0] = 42;
+    a.paddle_charge_max[3] = 56789;
     tia_serialize(&a, buf);
     tia_init(&b);
     ASSERT_TRUE(tia_deserialize(&b, buf, sz));
@@ -83,6 +144,9 @@ static int test_serialize_input(void)
     ASSERT_EQ(b.inpt[4], 0x00);
     ASSERT_EQ(b.inpt[5], 0x80);
     ASSERT_TRUE(b.inpt_ground);
+    ASSERT_EQ(b.paddle_charge_max[0], 1234);
+    ASSERT_EQ(b.paddle_charge_cnt[0], 42);
+    ASSERT_EQ(b.paddle_charge_max[3], 56789);
     return 0;
 }
 
@@ -91,5 +155,8 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_inpt_reflects_pin_state);
     RUN_TEST(test_vblank_bit7_grounds_inpt45);
     RUN_TEST(test_paddle_inpt_default);
+    RUN_TEST(test_paddle_cap_charges_to_high);
+    RUN_TEST(test_paddle_reground_resets_cap);
+    RUN_TEST(test_paddle_zero_charge_is_immediate);
     RUN_TEST(test_serialize_input);
 TEST_MAIN_END

@@ -117,10 +117,23 @@ struct tia {
     uint16_t audio_buf_len;
 
     /* Input: 6 TIA input pins. Bit 7 of inpt[i] reflects the pin state.
-     * 0..3 = paddles (stubbed 0x80 until M11), 4..5 = joystick fire buttons.
-     * When inpt_ground (VBLANK bit 7) is set, INPT4/5 reads return 0. */
+     *   0..3 = paddle potentiometers (analog capacitor dump)
+     *   4..5 = joystick fire buttons (digital)
+     * When inpt_ground (VBLANK bit 7) is set:
+     *   - INPT4/5 reads force-return 0 (game uses this to ground trigger)
+     *   - INPT0-3 paddle capacitors are discharged (held at 0 until release)
+     *
+     * Paddle model: when VBLANK bit 7 goes false, the capacitor on each
+     * paddle starts charging through the pot's resistance. Bit 7 of INPTi
+     * flips from 0 to 1 once the cap crosses the comparator threshold;
+     * the time to reach threshold is proportional to the paddle's rotary
+     * position. paddle_charge_max[i] is the total clocks required (set by
+     * the frontend from the analog input), paddle_charge_cnt[i] is the
+     * running countdown. */
     uint8_t  inpt[6];
     bool     inpt_ground;
+    uint16_t paddle_charge_max[4];  /* target charge time in TIA color clocks */
+    uint16_t paddle_charge_cnt[4];  /* running countdown; 0 = cap fully charged */
 };
 
 extern const uint32_t tia_ntsc_palette[128];
