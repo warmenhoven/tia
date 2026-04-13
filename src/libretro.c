@@ -267,12 +267,19 @@ void retro_unload_game(void) { sys.loaded = false; }
 
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 
+/* Cart serialise layout: full ROM (CART_MAX_SIZE) + 4-byte size + 1 mapper +
+ * 1 bank + 4 e0_slots + CART_SC_RAM_SIZE sc_ram + 1 sc_enabled flag.
+ * Serialising the full ROM at max size (not just sys.cart.size) keeps the
+ * serialize_size constant, which libretro prefers — the frontend only calls
+ * retro_serialize_size once, then reuses the buffer. */
+#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1)
+
 size_t retro_serialize_size(void)
 {
     return cpu_serialize_size()
          + riot_serialize_size()
          + tia_serialize_size()
-         + CART_4K + 2;   /* cart data + size field */
+         + CART_SER_BYTES;
 }
 
 bool retro_serialize(void *data, size_t size)
@@ -283,9 +290,18 @@ bool retro_serialize(void *data, size_t size)
     cpu_serialize(&sys.cpu, p);   p += cpu_serialize_size();
     riot_serialize(&sys.riot, p); p += riot_serialize_size();
     tia_serialize(&sys.tia, p);   p += tia_serialize_size();
-    memcpy(p, sys.cart.data, CART_4K); p += CART_4K;
+
+    memcpy(p, sys.cart.data, CART_MAX_SIZE);     p += CART_MAX_SIZE;
     p[0] = (uint8_t)(sys.cart.size & 0xFF);
-    p[1] = (uint8_t)(sys.cart.size >> 8);
+    p[1] = (uint8_t)((sys.cart.size >>  8) & 0xFF);
+    p[2] = (uint8_t)((sys.cart.size >> 16) & 0xFF);
+    p[3] = (uint8_t)((sys.cart.size >> 24) & 0xFF);
+    p += 4;
+    *p++ = sys.cart.mapper;
+    *p++ = sys.cart.bank;
+    memcpy(p, sys.cart.e0_slots, 4);             p += 4;
+    memcpy(p, sys.cart.sc_ram, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
+    *p++ = sys.cart.sc_enabled ? 1u : 0u;
     return true;
 }
 
@@ -300,8 +316,18 @@ bool retro_unserialize(const void *data, size_t size)
     p += riot_serialize_size();
     if (!tia_deserialize(&sys.tia,  p, tia_serialize_size()))  return false;
     p += tia_serialize_size();
-    memcpy(sys.cart.data, p, CART_4K); p += CART_4K;
-    sys.cart.size = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+
+    memcpy(sys.cart.data, p, CART_MAX_SIZE); p += CART_MAX_SIZE;
+    sys.cart.size = (uint32_t)p[0]
+                  | ((uint32_t)p[1] << 8)
+                  | ((uint32_t)p[2] << 16)
+                  | ((uint32_t)p[3] << 24);
+    p += 4;
+    sys.cart.mapper = *p++;
+    sys.cart.bank   = *p++;
+    memcpy(sys.cart.e0_slots, p, 4);            p += 4;
+    memcpy(sys.cart.sc_ram, p, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
+    sys.cart.sc_enabled = *p++ != 0;
     return true;
 }
 

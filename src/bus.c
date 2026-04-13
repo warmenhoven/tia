@@ -58,6 +58,10 @@ void bus_write(void *ctx, uint16_t addr, uint8_t data)
     tia_tick(b->tia);
     /* Writes never stall on RDY (NMOS 6502 hardware behaviour). */
     a = (uint16_t)(addr & 0x1FFF);
+    /* Let the cart snoop every CPU write. Mappers like 3F (Tigervision)
+     * switch banks on TIA-range writes, so the snoop fires before the
+     * actual destination routing below. */
+    cart_snoop_write(b->cart, a, data);
     if (a & 0x1000)         cart_write(b->cart, a, data);
     else if (a & 0x0080)    riot_write(b->riot, a, data);
     else                    tia_write(b->tia, a, data);
