@@ -7,57 +7,70 @@
 #include <stdio.h>
 
 #include "libretro.h"
+#include "cpu.h"
+#include "tia.h"
+#include "riot.h"
+#include "cart.h"
+#include "bus.h"
 
 #ifndef CORE_VERSION
 #define CORE_VERSION "0+unknown"
 #endif
 
-#define FRAME_WIDTH  160
-#define FRAME_HEIGHT 210
-#define FRAME_PIXELS (FRAME_WIDTH * FRAME_HEIGHT)
+#define FRAME_WIDTH       TIA_VISIBLE_WIDTH
+#define FRAME_HEIGHT      210            /* NTSC default visible lines */
+#define MAX_CYCLES_PER_RUN 200000        /* safety cap if VSYNC never fires */
+#define AUDIO_BUF_MONO    1024
 
-static retro_environment_t     environ_cb;
-static retro_video_refresh_t   video_cb;
-static retro_audio_sample_t    audio_cb;
+static retro_environment_t        environ_cb;
+static retro_video_refresh_t      video_cb;
+static retro_audio_sample_t       audio_cb;
 static retro_audio_sample_batch_t audio_batch_cb;
-static retro_input_poll_t      input_poll_cb;
-static retro_input_state_t     input_state_cb;
+static retro_input_poll_t         input_poll_cb;
+static retro_input_state_t        input_state_cb;
 
-static struct retro_log_callback logging;
-static retro_log_printf_t        log_cb;
+static struct retro_log_callback  logging;
+static retro_log_printf_t         log_cb;
 
-static uint32_t framebuffer[FRAME_PIXELS];
+static struct {
+    struct cpu  cpu;
+    struct tia  tia;
+    struct riot riot;
+    struct cart cart;
+    struct bus  bus;
+    bool        loaded;
+} sys;
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 {
-   va_list va;
-   (void)level;
-   va_start(va, fmt);
-   vfprintf(stderr, fmt, va);
-   va_end(va);
+    va_list va;
+    (void)level;
+    va_start(va, fmt);
+    vfprintf(stderr, fmt, va);
+    va_end(va);
 }
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
 void retro_set_environment(retro_environment_t cb)
 {
-   static const struct retro_controller_description controllers[] = {
-      { "Joystick", RETRO_DEVICE_JOYPAD },
-   };
-   static const struct retro_controller_info ports[] = {
-      { controllers, 1 },
-      { controllers, 1 },
-      { NULL, 0 },
-   };
+    static const struct retro_controller_description controllers[] = {
+        { "Joystick", RETRO_DEVICE_JOYPAD },
+    };
+    static const struct retro_controller_info ports[] = {
+        { controllers, 1 },
+        { controllers, 1 },
+        { NULL, 0 },
+    };
 
-   environ_cb = cb;
+    environ_cb = cb;
 
-   if (cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
-      log_cb = logging.log;
-   else
-      log_cb = fallback_log;
+    if (cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
+        log_cb = logging.log;
+    else
+        log_cb = fallback_log;
 
-   cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void *)ports);
+    cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void *)ports);
 }
 
 void retro_set_video_refresh(retro_video_refresh_t cb)       { video_cb = cb; }
@@ -66,86 +79,170 @@ void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_c
 void retro_set_input_poll(retro_input_poll_t cb)             { input_poll_cb = cb; }
 void retro_set_input_state(retro_input_state_t cb)           { input_state_cb = cb; }
 
-void retro_init(void)
-{
-   memset(framebuffer, 0, sizeof(framebuffer));
-}
-
+void retro_init(void)  { memset(&sys, 0, sizeof(sys)); }
 void retro_deinit(void) { }
 
 void retro_get_system_info(struct retro_system_info *info)
 {
-   memset(info, 0, sizeof(*info));
-   info->library_name     = "tia";
-   info->library_version  = CORE_VERSION;
-   info->need_fullpath    = false;
-   info->valid_extensions = "a26|bin";
-   info->block_extract    = false;
+    memset(info, 0, sizeof(*info));
+    info->library_name     = "tia";
+    info->library_version  = CORE_VERSION;
+    info->need_fullpath    = false;
+    info->valid_extensions = "a26|bin";
+    info->block_extract    = false;
 }
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-   memset(info, 0, sizeof(*info));
-   info->geometry.base_width   = FRAME_WIDTH;
-   info->geometry.base_height  = FRAME_HEIGHT;
-   info->geometry.max_width    = FRAME_WIDTH;
-   info->geometry.max_height   = 312;
-   info->geometry.aspect_ratio = 4.0f / 3.0f;
-   info->timing.fps            = 60.0;
-   info->timing.sample_rate    = 31400.0;
+    memset(info, 0, sizeof(*info));
+    info->geometry.base_width   = FRAME_WIDTH;
+    info->geometry.base_height  = FRAME_HEIGHT;
+    info->geometry.max_width    = FRAME_WIDTH;
+    info->geometry.max_height   = TIA_MAX_SCANLINES;
+    info->geometry.aspect_ratio = 4.0f / 3.0f;
+    info->timing.fps            = 60.0;
+    info->timing.sample_rate    = 31400.0;
 }
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
-   (void)port;
-   (void)device;
+    (void)port;
+    (void)device;
 }
 
-void retro_reset(void) { }
+void retro_reset(void)
+{
+    if (!sys.loaded) return;
+    tia_reset(&sys.tia);
+    riot_reset(&sys.riot);
+    cpu_reset(&sys.cpu);
+}
 
 void retro_run(void)
 {
-   input_poll_cb();
-   video_cb(framebuffer, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH * sizeof(uint32_t));
+    int cycles = 0;
+    if (!sys.loaded) return;
+
+    input_poll_cb();
+    /* TODO (M9): map libretro input to sys.riot.pa_in/pb_in. For now, all inputs
+     * remain at their init default (0xFF = no buttons pressed, active-low). */
+
+    while (!sys.tia.frame_ready && !sys.cpu.halted && cycles < MAX_CYCLES_PER_RUN) {
+        cpu_step(&sys.cpu);
+        cycles++;
+    }
+    sys.tia.frame_ready = false;
+
+    video_cb(sys.tia.fb, FRAME_WIDTH, FRAME_HEIGHT,
+             FRAME_WIDTH * sizeof(uint32_t));
+
+    {
+        int16_t mono[AUDIO_BUF_MONO];
+        int16_t stereo[AUDIO_BUF_MONO * 2];
+        size_t n = tia_drain_audio(&sys.tia, mono, AUDIO_BUF_MONO);
+        size_t i;
+        for (i = 0; i < n; i++) {
+            stereo[i * 2]     = mono[i];
+            stereo[i * 2 + 1] = mono[i];
+        }
+        if (n > 0) audio_batch_cb(stereo, n);
+    }
 }
 
 bool retro_load_game(const struct retro_game_info *info)
 {
-   enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
+    enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
 
-   (void)info;
+    if (!info || !info->data) return false;
 
-   if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt))
-   {
-      log_cb(RETRO_LOG_ERROR, "XRGB8888 is not supported.\n");
-      return false;
-   }
-   return true;
+    if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) {
+        log_cb(RETRO_LOG_ERROR, "XRGB8888 is not supported.\n");
+        return false;
+    }
+
+    if (!cart_load(&sys.cart, info->data, info->size)) {
+        log_cb(RETRO_LOG_ERROR, "Unsupported ROM size %zu (only 2048 or 4096).\n",
+               info->size);
+        return false;
+    }
+
+    tia_init(&sys.tia);
+    riot_init(&sys.riot);
+    bus_init(&sys.bus, &sys.cpu, &sys.tia, &sys.riot, &sys.cart);
+    {
+        struct cpu_bus cb;
+        cb.read  = bus_read;
+        cb.write = bus_write;
+        cb.ctx   = &sys.bus;
+        cpu_init(&sys.cpu, cb);
+    }
+    cpu_reset(&sys.cpu);
+    sys.loaded = true;
+    return true;
 }
 
 bool retro_load_game_special(unsigned type, const struct retro_game_info *info, size_t num)
 {
-   (void)type;
-   (void)info;
-   (void)num;
-   return false;
+    (void)type; (void)info; (void)num;
+    return false;
 }
 
-void retro_unload_game(void) { }
+void retro_unload_game(void) { sys.loaded = false; }
 
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 
-size_t retro_serialize_size(void)              { return 0; }
-bool   retro_serialize(void *data, size_t size) { (void)data; (void)size; return false; }
-bool   retro_unserialize(const void *data, size_t size) { (void)data; (void)size; return false; }
+size_t retro_serialize_size(void)
+{
+    return cpu_serialize_size()
+         + riot_serialize_size()
+         + tia_serialize_size()
+         + CART_4K + 2;   /* cart data + size field */
+}
 
-void *retro_get_memory_data(unsigned id) { (void)id; return NULL; }
-size_t retro_get_memory_size(unsigned id) { (void)id; return 0; }
+bool retro_serialize(void *data, size_t size)
+{
+    uint8_t *p = (uint8_t *)data;
+    size_t need = retro_serialize_size();
+    if (size < need) return false;
+    cpu_serialize(&sys.cpu, p);   p += cpu_serialize_size();
+    riot_serialize(&sys.riot, p); p += riot_serialize_size();
+    tia_serialize(&sys.tia, p);   p += tia_serialize_size();
+    memcpy(p, sys.cart.data, CART_4K); p += CART_4K;
+    p[0] = (uint8_t)(sys.cart.size & 0xFF);
+    p[1] = (uint8_t)(sys.cart.size >> 8);
+    return true;
+}
+
+bool retro_unserialize(const void *data, size_t size)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    size_t need = retro_serialize_size();
+    if (size < need) return false;
+    if (!cpu_deserialize(&sys.cpu,  p, cpu_serialize_size()))  return false;
+    p += cpu_serialize_size();
+    if (!riot_deserialize(&sys.riot, p, riot_serialize_size())) return false;
+    p += riot_serialize_size();
+    if (!tia_deserialize(&sys.tia,  p, tia_serialize_size()))  return false;
+    p += tia_serialize_size();
+    memcpy(sys.cart.data, p, CART_4K); p += CART_4K;
+    sys.cart.size = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+    return true;
+}
+
+void *retro_get_memory_data(unsigned id)
+{
+    if (id == RETRO_MEMORY_SYSTEM_RAM) return sys.riot.ram;
+    return NULL;
+}
+
+size_t retro_get_memory_size(unsigned id)
+{
+    if (id == RETRO_MEMORY_SYSTEM_RAM) return 128;
+    return 0;
+}
 
 void retro_cheat_reset(void) { }
 void retro_cheat_set(unsigned index, bool enabled, const char *code)
 {
-   (void)index;
-   (void)enabled;
-   (void)code;
+    (void)index; (void)enabled; (void)code;
 }
