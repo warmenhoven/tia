@@ -24,6 +24,9 @@ __pycache__/
 # Build artifacts
 tia_libretro*
 
+# Test data fetched on demand by tests/tools/fetch_harte.py
+tests/unit/roms/harte_65x02.bin
+
 # Editors
 .DS_Store
 *.swp
