@@ -527,11 +527,18 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
         t->inpt_ground  = (data & 0x80) != 0;
         break;
     }
-    case 0x02: /* WSYNC strobe */
-        t->rdy_asserted = true;
+    case 0x02: /* WSYNC strobe. Assert RDY until next HSYNC (scanline wrap).
+                * If the write lands at hpos=0 (the scanline just wrapped
+                * during this cycle's 3 TIA ticks), the WSYNC "missed" —
+                * the beam is already at HSYNC, so no stall is needed. */
+        if (t->hpos != 0)
+            t->rdy_asserted = true;
         break;
-    case 0x03: /* RSYNC strobe — resets horizontal counter */
-        t->hpos = 0;
+    case 0x03: /* RSYNC strobe — aligns horizontal counter to HSYNC. Sets
+                 hctr 3 clocks before wrap, shortening the current scanline
+                 to finish 3 clocks from now (not zeroing it, which would
+                 *extend* the scanline by the remaining distance to wrap). */
+        t->hpos = (uint16_t)(TIA_SCANLINE_CLOCKS - 3);
         break;
     case 0x04: t->nusiz0 = data; break;
     case 0x05: t->nusiz1 = data; break;

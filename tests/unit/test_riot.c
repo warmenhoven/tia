@@ -42,14 +42,18 @@ static int test_tim1t_decrements_every_cycle(void)
     return 0;
 }
 
+/* After a timer write, the prescaler is staged so the *first* tick wraps
+ * and decrements the timer. Decrement events fire at cycles 1, 1+D,
+ * 1+2D, ... where D is the prescaler divisor. */
 static int test_tim8t_decrements_every_8_cycles(void)
 {
     struct riot r;
     riot_init(&r);
     riot_write(&r, 0x0295, 5);           /* TIM8T, timer=5 */
-    tick_n(&r, 7); ASSERT_EQ(r.timer, 5);
     tick_n(&r, 1); ASSERT_EQ(r.timer, 4);
-    tick_n(&r, 8); ASSERT_EQ(r.timer, 3);
+    tick_n(&r, 7); ASSERT_EQ(r.timer, 4);
+    tick_n(&r, 1); ASSERT_EQ(r.timer, 3);
+    tick_n(&r, 8); ASSERT_EQ(r.timer, 2);
     return 0;
 }
 
@@ -58,9 +62,9 @@ static int test_tim64t_decrements_every_64(void)
     struct riot r;
     riot_init(&r);
     riot_write(&r, 0x0296, 2);
-    tick_n(&r, 63); ASSERT_EQ(r.timer, 2);
     tick_n(&r, 1);  ASSERT_EQ(r.timer, 1);
-    tick_n(&r, 64); ASSERT_EQ(r.timer, 0);
+    tick_n(&r, 63); ASSERT_EQ(r.timer, 1);
+    tick_n(&r, 1);  ASSERT_EQ(r.timer, 0);
     return 0;
 }
 
@@ -69,8 +73,9 @@ static int test_t1024t_decrements_every_1024(void)
     struct riot r;
     riot_init(&r);
     riot_write(&r, 0x0297, 1);
-    tick_n(&r, 1023); ASSERT_EQ(r.timer, 1);
     tick_n(&r, 1);    ASSERT_EQ(r.timer, 0);
+    tick_n(&r, 1023); ASSERT_EQ(r.timer, 0);
+    tick_n(&r, 1);    ASSERT_EQ(r.timer, 0xFF);  /* underflow */
     return 0;
 }
 
@@ -81,7 +86,7 @@ static int test_underflow_sets_flag_and_switches_to_div1(void)
     struct riot r;
     riot_init(&r);
     riot_write(&r, 0x0295, 1);           /* TIM8T, timer=1 */
-    tick_n(&r, 8);                        /* timer -> 0 */
+    tick_n(&r, 1);                        /* timer -> 0 */
     ASSERT_EQ(r.timer, 0);
     ASSERT_TRUE(!r.timer_underflow);
     tick_n(&r, 8);                        /* next decrement -> underflow */

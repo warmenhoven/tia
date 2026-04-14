@@ -18,17 +18,18 @@
 #endif
 
 #define FRAME_WIDTH       TIA_VISIBLE_WIDTH
-/* Nominal base height reported in retro_get_system_av_info. The actual
- * shipped height is dynamic per-frame (visible_end - visible_start) so the
- * frontend stretches game content to fill the display without us baking in
- * black letterbox bars. The frontend receives updated geometry via the
- * width/height args to video_cb. */
+/* Fixed height handed to video_cb and advertised in retro_get_system_av_info.
+ * Kept constant frame-to-frame so the frontend's rescale is stable: if we
+ * shipped a variable height (e.g. visible_end - visible_start, which drifts
+ * by a scanline or two as VSYNC/VBLANK edges wobble), the same TIA scanline
+ * would land at a different output Y each frame and stationary content would
+ * appear to jitter vertically. The per-frame anchor (offset) still tracks
+ * visible_start so games with different visible regions center correctly. */
 #define FRAME_HEIGHT_NOMINAL 192
-/* Fallback shipped window used before the game has performed a VBLANK
- * transition (cold boot / a few frames of boot where visible_start is still
- * the 0xFFFF sentinel). */
+/* Fallback anchor used before the game has performed a VBLANK transition
+ * (cold boot / a few frames of boot where visible_start is still the
+ * 0xFFFF sentinel). */
 #define SHIP_OFFSET_FALLBACK 30
-#define SHIP_HEIGHT_FALLBACK 192
 #define MAX_CYCLES_PER_RUN 200000        /* safety cap if VSYNC never fires */
 #define AUDIO_BUF_MONO    1024
 
@@ -329,16 +330,10 @@ void retro_run(void)
     sys.tia.frame_ready = false;
 
     {
-        uint16_t offset, height;
-        if (sys.tia.visible_start != 0xFFFF &&
-            sys.tia.visible_end   != 0xFFFF &&
-            sys.tia.visible_end   >  sys.tia.visible_start) {
-            offset = sys.tia.visible_start;
-            height = (uint16_t)(sys.tia.visible_end - sys.tia.visible_start);
-        } else {
-            offset = SHIP_OFFSET_FALLBACK;
-            height = SHIP_HEIGHT_FALLBACK;
-        }
+        uint16_t offset = (sys.tia.visible_start != 0xFFFF)
+                        ? sys.tia.visible_start
+                        : SHIP_OFFSET_FALLBACK;
+        uint16_t height = FRAME_HEIGHT_NOMINAL;
         if (offset + height > TIA_MAX_SCANLINES)
             height = (uint16_t)(TIA_MAX_SCANLINES - offset);
         video_cb(sys.tia.fb + (size_t)offset * FRAME_WIDTH,

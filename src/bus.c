@@ -44,18 +44,19 @@ void bus_write(void *ctx, uint16_t addr, uint8_t data)
     struct bus *b = (struct bus *)ctx;
     uint16_t a;
 
-    /* On real hardware, writes are latched on φ2 — within the CPU cycle,
-     * not after it. Model this by performing the write at clock 2 of 3:
-     * tick one TIA clock, apply the write, then tick the remaining two.
-     *
-     * Getting this right matters for STA WSYNC near the end of a scanline.
-     * If we ticked all 3 clocks before applying the write, a write on the
-     * last cycle of a scanline would cross the scanline wrap and re-assert
-     * RDY on the *next* scanline, burning an entire extra scanline of
-     * stall — visible as sprite stretching in games with tight flicker
-     * kernels (Adventure's dragon). */
+    /* Write takes effect at the end of the cycle: all 3 TIA color clocks
+     * happen first, then RIOT ticks, then the write lands. This produces
+     * correct STA WSYNC behaviour at scanline boundaries: if the scanline
+     * wraps during the 3 ticks and the write is WSYNC, tia_write sees
+     * hpos=0 and skips the RDY assertion (WSYNC "missed the scanline"). */
     tia_tick(b->tia);
     tia_tick(b->tia);
+    tia_tick(b->tia);
+    /* RIOT ticks for this cycle BEFORE the write lands. A timer write
+     * loads a fresh interval value; that value must NOT be ticked by
+     * this cycle's prescaler clock (the tick corresponds to the write
+     * cycle itself, which only delivers the new value). */
+    riot_tick(b->riot);
     /* Writes never stall on RDY (NMOS 6502 hardware behaviour). */
     a = (uint16_t)(addr & 0x1FFF);
     /* Let the cart snoop every CPU write. Mappers like 3F (Tigervision)
@@ -65,7 +66,4 @@ void bus_write(void *ctx, uint16_t addr, uint8_t data)
     if (a & 0x1000)         cart_write(b->cart, a, data);
     else if (a & 0x0080)    riot_write(b->riot, a, data);
     else                    tia_write(b->tia, a, data);
-
-    tia_tick(b->tia);
-    riot_tick(b->riot);
 }

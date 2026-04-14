@@ -156,10 +156,13 @@ void riot_write(struct riot *r, uint16_t addr, uint8_t data)
 
     /* Timer region */
     if (addr & A4) {
-        /* Interval write: load timer, choose prescaler, latch IRQ-enable. */
+        /* Interval write: load timer, choose prescaler, latch IRQ-enable.
+         * Start prescaler at div-1 so the *first* cycle post-write ticks
+         * the timer — the write cycle itself is the initial prescaler
+         * tick (matches the 6532 datasheet). */
         static const uint16_t divs[4] = { 1, 8, 64, 1024 };
         r->prescaler_div   = divs[addr & (A1 | A0)];
-        r->prescaler_cnt   = 0;
+        r->prescaler_cnt   = (uint16_t)(r->prescaler_div - 1);
         r->timer           = data;
         r->timer_underflow = false;
         r->timer_irq_enable = (addr & A3) != 0;

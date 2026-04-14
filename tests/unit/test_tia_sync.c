@@ -145,13 +145,18 @@ static int test_vsync_scanline_doesnt_advance(void)
 
 /* --- RSYNC --- */
 
-static int test_rsync_resets_hpos(void)
+static int test_rsync_aligns_hpos_near_hsync(void)
 {
+    /* RSYNC aligns the horizontal counter so the current scanline wraps
+     * ~3 clocks from now. The internal hcounter is driven to H_CLOCKS-3;
+     * 3 more ticks wrap back to hp=0. */
     struct tia t;
     tia_init(&t);
     tick_n(&t, 120);
     ASSERT_EQ(t.hpos, 120);
     tia_write(&t, 0x03, 0);                /* RSYNC strobe */
+    ASSERT_EQ(t.hpos, TIA_SCANLINE_CLOCKS - 3);
+    tick_n(&t, 3);
     ASSERT_EQ(t.hpos, 0);
     return 0;
 }
@@ -214,7 +219,7 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_vblank_skips_pixel_writes);
     RUN_TEST(test_vsync_rising_edge_signals_frame);
     RUN_TEST(test_vsync_scanline_doesnt_advance);
-    RUN_TEST(test_rsync_resets_hpos);
+    RUN_TEST(test_rsync_aligns_hpos_near_hsync);
     RUN_TEST(test_colubk_mirror_addresses);
     RUN_TEST(test_serialize_roundtrip);
     RUN_TEST(test_deserialize_rejects_short_buffer);
