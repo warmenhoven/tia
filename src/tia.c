@@ -486,8 +486,11 @@ uint8_t tia_read(struct tia *t, uint16_t addr)
     if (sel < 8)
         return (uint8_t)((t->cx[sel] & 0xC0) | lobs);
     if (sel < 0x0E) {
-        /* INPT4/5 are force-grounded by VBLANK bit 7. */
-        uint8_t v = (t->inpt_ground && sel >= 0x0C) ? 0 : t->inpt[sel - 8];
+        /* inpt_ground (VBLANK bit 7, the paddle DUMP line) only grounds
+         * the paddle capacitors (INPT0-3). INPT4/5 are the digital trigger
+         * pins and aren't affected by bit 7 — their latching is controlled
+         * by VBLANK bit 6, handled in tia_tick. */
+        uint8_t v = t->inpt[sel - 8];
         return (uint8_t)((v & 0x80) | (lobs & 0x7F));
     }
     return (uint8_t)(addr & 0xFF);

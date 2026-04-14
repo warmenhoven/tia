@@ -31,22 +31,24 @@ static int test_inpt_reflects_pin_state(void)
     return 0;
 }
 
-/* --- VBLANK bit 7 grounds INPT4/5 --- */
+/* --- VBLANK bit 7 grounds paddles only, NOT INPT4/5 --- */
 
-static int test_vblank_bit7_grounds_inpt45(void)
+static int test_vblank_bit7_grounds_paddles_only(void)
 {
+    /* VBLANK bit 7 is the paddle DUMP line: it shorts INPT0-3 to ground
+     * so paddle caps discharge. INPT4/5 (digital triggers) are NOT
+     * affected — their latching is controlled by VBLANK bit 6. */
     struct tia t;
     tia_init(&t);
-    t.inpt[4] = 0x80;                              /* would normally read high */
+    t.inpt[4] = 0x80;                              /* button not pressed */
     t.inpt[5] = 0x80;
-    tia_write(&t, 0x01, 0x80);                     /* VBLANK bit 7 = ground */
-    ASSERT_EQ(tia_read(&t, 0x0C), 0x00 | 0x0C);
-    ASSERT_EQ(tia_read(&t, 0x0D), 0x00 | 0x0D);
-    /* Paddle INPTs (0-3) are NOT grounded by this bit. */
-    ASSERT_EQ(tia_read(&t, 0x08), 0x80 | 0x08);
-    /* Clear ground; reads return to normal. */
-    tia_write(&t, 0x01, 0x00);
+    tia_write(&t, 0x01, 0x80);                     /* VBLANK bit 7 = DUMP */
+    tia_tick(&t);                                  /* propagate dump to inpt[] */
+    /* INPT4/5 unaffected by bit 7. */
     ASSERT_EQ(tia_read(&t, 0x0C), 0x80 | 0x0C);
+    ASSERT_EQ(tia_read(&t, 0x0D), 0x80 | 0x0D);
+    /* Paddle INPT0 reads 0 (capacitor grounded). */
+    ASSERT_EQ(tia_read(&t, 0x08), 0x00 | 0x08);
     return 0;
 }
 
@@ -153,7 +155,7 @@ static int test_serialize_input(void)
 TEST_MAIN_BEGIN
     RUN_TEST(test_inpt_default_high);
     RUN_TEST(test_inpt_reflects_pin_state);
-    RUN_TEST(test_vblank_bit7_grounds_inpt45);
+    RUN_TEST(test_vblank_bit7_grounds_paddles_only);
     RUN_TEST(test_paddle_inpt_default);
     RUN_TEST(test_paddle_cap_charges_to_high);
     RUN_TEST(test_paddle_reground_resets_cap);
