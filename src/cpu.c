@@ -303,8 +303,27 @@ static void op_00(struct cpu *c)
 /* 01: ORA (zp,X) */
 static void op_01(struct cpu *c) { uint16_t ea = ea_izx(c); c->a |= r8(c, ea); snz(c, c->a); }
 
-/* 02: JAM */
-static void op_jam(struct cpu *c) { c->halted = true; c->pc--; }
+/* JAM (a.k.a. KIL, HLT, CRS): 12 illegal NMOS opcodes that lock the CPU.
+ * After the opcode fetch, the CPU's microcode gets stuck in a fixed
+ * read-only pattern that drives the address bus through PC+1 and the
+ * IRQ/NMI-vector region ($FFFE/$FFFF) before settling. PC is only
+ * incremented once (for the opcode fetch). The cycle pattern (11 total
+ * reads, same for every JAM variant) is what the Harte test vectors
+ * model. Registers/flags unchanged, halted. */
+static void op_jam(struct cpu *c)
+{
+    r8(c, c->pc);
+    r8(c, 0xFFFF);
+    r8(c, 0xFFFE);
+    r8(c, 0xFFFE);
+    r8(c, 0xFFFF);
+    r8(c, 0xFFFF);
+    r8(c, 0xFFFF);
+    r8(c, 0xFFFF);
+    r8(c, 0xFFFF);
+    r8(c, 0xFFFF);
+    c->halted = true;
+}
 
 /* 03: SLO (zp,X) */
 static void op_03(struct cpu *c)
