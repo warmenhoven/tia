@@ -236,13 +236,16 @@ static int test_vdelp0_uses_latched_gfx(void)
 
 static int test_resp0_at_hpos_sets_p0_pos(void)
 {
+    /* RESP latency: the horizontal counter is reset 5 color clocks after
+     * the strobe (the TIA's internal pipeline delay). Empirically verified
+     * against reference renders of Adventure (yellow-castle gate). */
     struct tia t;
     int i;
     std_setup(&t);
     tia_write(&t, 0x1B, 0xFF);
     for (i = 0; i < 100; i++) tia_tick(&t);      /* hpos = 100 */
     tia_write(&t, 0x10, 0);                       /* RESP0 */
-    ASSERT_EQ(t.p0_pos, 100 + 4 - TIA_HBLANK_CLOCKS);   /* 36 */
+    ASSERT_EQ(t.p0_pos, 100 + 5 - TIA_HBLANK_CLOCKS);   /* 37 */
     return 0;
 }
 

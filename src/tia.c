@@ -439,7 +439,13 @@ void tia_tick(struct tia *t)
         }
     }
 
-    /* Render current pixel if in visible region and nothing is blanking it. */
+    /* HMOVE comb: 8 visible color clocks of extended blanking after an
+     * HMOVE strobe. Hold the counter through HBLANK so an HMOVE strobed
+     * mid-HBLANK still blanks the first 8 visible pixels; drain it on
+     * every post-HBLANK clock (visible OR VBLANK) so an HMOVE strobed
+     * during VBLANK expires off-screen instead of bleeding into the first
+     * visible scanline (Adventure's yellow castle top row exhibited this
+     * as an 8-pixel black stub). */
     if (t->hpos >= TIA_HBLANK_CLOCKS &&
         !t->vblank && !t->vsync &&
         t->scanline < TIA_MAX_SCANLINES) {
@@ -448,12 +454,13 @@ void tia_tick(struct tia *t)
         uint32_t out;
         if (t->hmove_blank > 0) {
             out = t->palette[0];          /* HMOVE comb: black */
-            t->hmove_blank--;
         } else {
             out = t->palette[(pixel_color(t, x) >> 1) & 0x7F];
         }
         t->fb[y * TIA_VISIBLE_WIDTH + x] = out;
     }
+    if (t->hpos >= TIA_HBLANK_CLOCKS && t->hmove_blank > 0)
+        t->hmove_blank--;
 
     /* Advance beam. HSYNC at wrap. */
     t->hpos++;
@@ -556,10 +563,10 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
     case 0x0E: t->pf1    = data; break;
     case 0x0F: t->pf2    = data; break;
     case 0x10: /* RESP0 strobe */
-        t->p0_pos = (int16_t)((int)t->hpos + 4 - TIA_HBLANK_CLOCKS);
+        t->p0_pos = (int16_t)((int)t->hpos + 5 - TIA_HBLANK_CLOCKS);
         break;
     case 0x11: /* RESP1 strobe */
-        t->p1_pos = (int16_t)((int)t->hpos + 4 - TIA_HBLANK_CLOCKS);
+        t->p1_pos = (int16_t)((int)t->hpos + 5 - TIA_HBLANK_CLOCKS);
         break;
     case 0x12: /* RESM0 strobe */
         t->m0_pos = (int16_t)((int)t->hpos + 4 - TIA_HBLANK_CLOCKS);
