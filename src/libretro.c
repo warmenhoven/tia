@@ -70,6 +70,16 @@ static struct {
     struct bus  bus;
     unsigned    port_device[2];
     bool        loaded;
+    /* Console switch state — latched, toggled by button edges. The six
+     * switch-setting retropad buttons (L/L2/L3/R/R2/R3) each drive one
+     * side of a physical toggle: L sets left-diff A, L2 sets left-diff
+     * B, and so on. Initial values match common factory defaults. */
+    bool        sw_color;        /* true = color, false = B&W */
+    bool        sw_left_diff_a;  /* true = A (amateur), false = B (pro) */
+    bool        sw_right_diff_a;
+    /* Previous-frame button state for edge detection on the six
+     * switch-setting buttons (one bit per JOYPAD_L..R3). */
+    uint8_t     sw_prev;
 } sys;
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
@@ -125,6 +135,11 @@ void retro_init(void)
     memset(&sys, 0, sizeof(sys));
     sys.port_device[0] = DEV_JOYPAD;
     sys.port_device[1] = DEV_JOYPAD;
+    /* Factory defaults for the console toggles: Color on, both
+     * difficulty switches B (pro). Players flip them with L/L2/L3/R/R2/R3. */
+    sys.sw_color        = true;
+    sys.sw_left_diff_a  = false;
+    sys.sw_right_diff_a = false;
 }
 void retro_deinit(void) { }
 
@@ -234,6 +249,39 @@ static uint8_t pa_bits_driving(uint8_t pa)
     return pa;
 }
 
+/* Notify the frontend's OSD that a console toggle changed. Prefers the
+ * richer _EXT variant; falls back to the legacy one so old RetroArch
+ * builds still see something. */
+static void notify_switch_change(const char *text)
+{
+    struct retro_message_ext ext;
+    struct retro_message     legacy;
+    ext.msg      = text;
+    ext.duration = 2000;                 /* ms */
+    ext.priority = 1;
+    ext.level    = RETRO_LOG_INFO;
+    ext.target   = RETRO_MESSAGE_TARGET_OSD;
+    ext.type     = RETRO_MESSAGE_TYPE_NOTIFICATION;
+    ext.progress = -1;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &ext))
+        return;
+    legacy.msg    = text;
+    legacy.frames = 120;                 /* ~2 s at 60 Hz */
+    if (environ_cb) environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &legacy);
+}
+
+/* Flip a switch latch, but only notify when the requested position differs
+ * from the current one — mirrors physical-switch semantics (pushing the
+ * lever up when it's already up is a no-op). Pass msg==NULL to toggle
+ * silently (the TV-type change is visible on screen and doesn't need a
+ * notification). */
+static void switch_set(bool *latch, bool value, const char *msg)
+{
+    if (*latch == value) return;
+    *latch = value;
+    if (msg) notify_switch_change(msg);
+}
+
 static void poll_inputs(void)
 {
     uint8_t pa = 0xFF;
@@ -264,14 +312,56 @@ static void poll_inputs(void)
     }
     sys.riot.pa_in = pa;
 
-    /* SWCHB: console switches. Bits 0,1 = Reset/Select (active-low);
-     * bit 3 = Color (1 = Color); bits 6,7 = Difficulty L/R (1 = A/pro).
-     * Defaults: Color + Diff B/B, unused bits 2,4,5 high. Read from port 0
-     * joypad regardless of active controller — console switches are on the
-     * console itself, not the controller. */
-    pb = 0x3B;
+    /* SWCHB: console switches. Read from port 0 regardless of active
+     * controller — these are on the console, not the controller.
+     *   bit 0: Reset   (active-low; 0 = pressed)
+     *   bit 1: Select  (active-low)
+     *   bit 2: unused, reads as 1
+     *   bit 3: Color/B&W           (1 = Color)
+     *   bits 4-5: unused, read as 1
+     *   bit 6: Left Difficulty     (1 = A / amateur)
+     *   bit 7: Right Difficulty    (1 = A / amateur)
+     *
+     * The three toggle switches are state machines driven by button edges.
+     * Button → switch assignment follows the common 2600 touchscreen overlay
+     * (common-overlays/gamepads/Named_Overlays/Atari - 2600.cfg): each switch
+     * gets an adjacent row-pair (L/R for left-diff, L2/R2 for right-diff,
+     * L3/R3 for TV type), upper = A, lower = B. */
+    {
+        uint8_t edge_now = 0;
+        if (js(0, RETRO_DEVICE_ID_JOYPAD_L))  edge_now |= 0x01;
+        if (js(0, RETRO_DEVICE_ID_JOYPAD_R))  edge_now |= 0x02;
+        if (js(0, RETRO_DEVICE_ID_JOYPAD_L2)) edge_now |= 0x04;
+        if (js(0, RETRO_DEVICE_ID_JOYPAD_R2)) edge_now |= 0x08;
+        if (js(0, RETRO_DEVICE_ID_JOYPAD_L3)) edge_now |= 0x10;
+        if (js(0, RETRO_DEVICE_ID_JOYPAD_R3)) edge_now |= 0x20;
+        /* Rising-edge only, so holding doesn't chatter the latch. On an
+         * actual state change the OSD notifies the user so they see what
+         * they just toggled (console switches are easy to hit by accident
+         * and hard to diagnose otherwise). A/B are just the switch
+         * positions; their meaning is game-specific (e.g. A is *harder*
+         * in Adventure but easier in Combat). */
+        {
+            uint8_t rising = (uint8_t)(edge_now & ~sys.sw_prev);
+            if (rising & 0x01) switch_set(&sys.sw_left_diff_a,  true,
+                                "Left Difficulty: A");
+            if (rising & 0x02) switch_set(&sys.sw_left_diff_a,  false,
+                                "Left Difficulty: B");
+            if (rising & 0x04) switch_set(&sys.sw_right_diff_a, true,
+                                "Right Difficulty: A");
+            if (rising & 0x08) switch_set(&sys.sw_right_diff_a, false,
+                                "Right Difficulty: B");
+            if (rising & 0x10) switch_set(&sys.sw_color,        true,  NULL);
+            if (rising & 0x20) switch_set(&sys.sw_color,        false, NULL);
+        }
+        sys.sw_prev = edge_now;
+    }
+    pb = 0x3F;                                          /* unused bits high */
     if (js(0, RETRO_DEVICE_ID_JOYPAD_START))  pb &= (uint8_t)~0x01;
     if (js(0, RETRO_DEVICE_ID_JOYPAD_SELECT)) pb &= (uint8_t)~0x02;
+    if (!sys.sw_color)       pb &= (uint8_t)~0x08;
+    if (sys.sw_left_diff_a)  pb |= 0x40;
+    if (sys.sw_right_diff_a) pb |= 0x80;
     sys.riot.pb_in = pb;
 
     /* INPT4/5: joystick/driving fire buttons (bit 7 only; rest are 0).
@@ -372,6 +462,10 @@ bool retro_load_game(const struct retro_game_info *info)
     }
 
     {
+        /* Button assignments follow the common 2600 touchscreen overlay
+         * (common-overlays: "Atari - 2600.cfg"): each toggle switch gets a
+         * dedicated row-pair of shoulder buttons. Console switches live on
+         * port 0 only — they're on the console, not the controller. */
         static const struct retro_input_descriptor desc[] = {
             { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Up" },
             { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Down" },
@@ -380,6 +474,12 @@ bool retro_load_game(const struct retro_game_info *info)
             { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "Fire" },
             { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Reset" },
             { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "Left Difficulty A" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "Left Difficulty B" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,     "Right Difficulty A" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "Right Difficulty B" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "Color" },
+            { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Black/White" },
             { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Up" },
             { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Down" },
             { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Left" },
@@ -421,13 +521,15 @@ unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
  * serialize_size constant, which libretro prefers — the frontend only calls
  * retro_serialize_size once, then reuses the buffer. */
 #define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1)
+#define SYS_SER_BYTES  1                /* packed console-switch state */
 
 size_t retro_serialize_size(void)
 {
     return cpu_serialize_size()
          + riot_serialize_size()
          + tia_serialize_size()
-         + CART_SER_BYTES;
+         + CART_SER_BYTES
+         + SYS_SER_BYTES;
 }
 
 bool retro_serialize(void *data, size_t size)
@@ -450,6 +552,10 @@ bool retro_serialize(void *data, size_t size)
     memcpy(p, sys.cart.e0_slots, 4);             p += 4;
     memcpy(p, sys.cart.sc_ram, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
     *p++ = sys.cart.sc_enabled ? 1u : 0u;
+
+    *p++ = (uint8_t)((sys.sw_color        ? 0x01u : 0u)
+                   | (sys.sw_left_diff_a  ? 0x02u : 0u)
+                   | (sys.sw_right_diff_a ? 0x04u : 0u));
     return true;
 }
 
@@ -476,6 +582,16 @@ bool retro_unserialize(const void *data, size_t size)
     memcpy(sys.cart.e0_slots, p, 4);            p += 4;
     memcpy(sys.cart.sc_ram, p, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
     sys.cart.sc_enabled = *p++ != 0;
+
+    {
+        uint8_t sw = *p++;
+        sys.sw_color        = (sw & 0x01) != 0;
+        sys.sw_left_diff_a  = (sw & 0x02) != 0;
+        sys.sw_right_diff_a = (sw & 0x04) != 0;
+        /* sw_prev is transient frame state, not saved. Reset so the first
+         * post-load poll doesn't mis-fire a rising-edge. */
+        sys.sw_prev = 0;
+    }
     return true;
 }
 

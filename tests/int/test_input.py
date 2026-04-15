@@ -116,3 +116,71 @@ def test_fire_button_reaches_inpt4(core_path):
         fire = sample_center(s.video.screenshot())
     assert fire == (0, 0, 0), f"fire frame should be black (COLUBK=0), got {fire}"
     assert neutral != (0, 0, 0), f"neutral frame should not be black, got {neutral}"
+
+
+def _build_swchb_echo_rom() -> bytearray:
+    """ROM that echoes SWCHB to COLUBK every frame. Lets integration tests
+    observe the console-switch latches via pixel colour."""
+    rom = bytearray(4096)
+    def put(off, *bs):
+        for i, b in enumerate(bs): rom[off + i] = b
+    put(0x000, 0x78, 0xD8, 0xA2, 0xFF, 0x9A)  # SEI, CLD, LDX #$FF, TXS
+    # LOOP at $F005
+    put(0x005, 0xA9, 0x02, 0x85, 0x00)        # VSYNC on
+    put(0x009, 0x85, 0x02, 0x85, 0x02, 0x85, 0x02)
+    put(0x00F, 0xA9, 0x00, 0x85, 0x00)        # VSYNC off
+    put(0x013, 0xAD, 0x82, 0x02)              # LDA $0282 (SWCHB)
+    put(0x016, 0x85, 0x09)                    # STA COLUBK
+    put(0x018, 0xA9, 0x02, 0xA2, 0xE8)        # LDA #$02, LDX #$E8
+    put(0x01C, 0x85, 0x02, 0xCA, 0xD0, 0xFB)  # WSYNC loop
+    put(0x021, 0x4C, 0x05, 0xF0)              # JMP LOOP
+    rom[0xFFC] = 0x00; rom[0xFFD] = 0xF0
+    rom[0xFFE] = 0x00; rom[0xFFF] = 0xF0
+    return rom
+
+
+def test_console_switches_toggle_on_shoulder_buttons(core_path):
+    """Per the common 2600 overlay, the left-difficulty latch is driven by
+    L (set to A) and R (set to B) — an adjacent row-pair, upper/lower.
+    Pressing once flips the latch; holding doesn't chatter it."""
+    rom = _build_swchb_echo_rom()
+    states = [
+        libretro.JoypadState(),            # 0 boot
+        libretro.JoypadState(),            # 1 neutral -> default (Diff B/B + color)
+        libretro.JoypadState(l=True),      # 2 press L -> Left Diff A (bit 6 set)
+        libretro.JoypadState(l=True),      # 3 still held: no change
+        libretro.JoypadState(),            # 4 released
+        libretro.JoypadState(r=True),      # 5 press R -> Left Diff B (bit 6 clear)
+    ]
+    driver = libretro.IterableInputDriver(input_generator=iter(states))
+    session = (libretro.SessionBuilder
+               .defaults(core_path)
+               .with_content(rom)
+               .with_input(driver)
+               .build())
+    def swchb_from_center(shot):
+        # COLUBK bit layout: the TIA palette maps (COLUBK>>1)&0x7F to a
+        # colour. We reverse-engineer by picking a unique COLUBK per
+        # expected SWCHB value via a direct screenshot->hue lookup. Since
+        # the test only needs to assert *different* / *same*, compare the
+        # centre pixel triples directly.
+        data = bytes(shot.data)
+        w, h = shot.width, shot.height
+        off = (h // 2 * w + w // 2) * 4
+        return data[off], data[off + 1], data[off + 2]
+    with session as s:
+        s.run()                                       # boot
+        s.run()                                       # neutral
+        neutral   = swchb_from_center(s.video.screenshot())
+        s.run()                                       # L pressed
+        l_pressed = swchb_from_center(s.video.screenshot())
+        s.run()                                       # still held
+        l_held    = swchb_from_center(s.video.screenshot())
+        s.run()                                       # released
+        l_released = swchb_from_center(s.video.screenshot())
+        s.run()                                       # R pressed
+        r_pressed = swchb_from_center(s.video.screenshot())
+    assert l_pressed != neutral,   "L press should flip left-diff latch to A"
+    assert l_held == l_pressed,    "holding L should not chatter the latch"
+    assert l_released == l_pressed, "releasing L should not flip back"
+    assert r_pressed == neutral,   "R press should restore left-diff to B"
