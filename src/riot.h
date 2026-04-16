@@ -37,6 +37,13 @@ struct riot {
     bool     pa7_irq_enable;
     bool     pa7_edge_flag;     /* TIMINT bit 6 */
     uint8_t  pa7_last;
+
+    /* Callback fired when Port A's output or DDR latches change (i.e. the
+     * effective pin state seen by a connected controller may have changed).
+     * Used by the keypad controller to rescan the row drivers on each
+     * SWCHA / SWACNT write. NULL = no callback. */
+    void   (*pa_changed)(void *ctx);
+    void    *pa_changed_ctx;
 };
 
 void riot_init(struct riot *r);

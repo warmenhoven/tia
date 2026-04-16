@@ -146,8 +146,12 @@ void riot_write(struct riot *r, uint16_t addr, uint8_t data)
 
     if (!(addr & A2)) {
         switch (addr & (A1 | A0)) {
-        case 0:  r->pa_out = data; break;
-        case A0: r->pa_ddr = data; break;
+        case 0:  r->pa_out = data;
+            if (r->pa_changed) r->pa_changed(r->pa_changed_ctx);
+            break;
+        case A0: r->pa_ddr = data;
+            if (r->pa_changed) r->pa_changed(r->pa_changed_ctx);
+            break;
         case A1: r->pb_out = data; break;
         default: r->pb_ddr = data; break;
         }

@@ -80,6 +80,12 @@ static struct {
     /* Previous-frame button state for edge detection on the six
      * switch-setting buttons (one bit per JOYPAD_L..R3). */
     uint8_t     sw_prev;
+
+    /* Keypad button state for ports in DEV_KEYPAD mode. One bit per key
+     * in the order {1,2,3,4,5,6,7,8,9,*,0,#} -> bits 0..11. Bit set =
+     * pressed. Updated by poll_inputs, consumed by keypad_update() on
+     * every SWCHA/DDR change. */
+    uint16_t    keypad_pressed[2];
 } sys;
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
@@ -282,6 +288,150 @@ static void switch_set(bool *latch, bool value, const char *msg)
     if (msg) notify_switch_change(msg);
 }
 
+/* --- Keypad controller ---
+ *
+ * The Atari keypad is a 12-button 4-row × 3-column matrix:
+ *    1  2  3
+ *    4  5  6
+ *    7  8  9
+ *    *  0  #
+ *
+ * Row drivers are on SWCHA's output bits (the same bits that drive the
+ * joystick direction pins). Column sense lines are on INPT0-3 / INPT4-5:
+ *   Port 0 (left):  col 0 → INPT0,  col 1 → INPT1,  col 2 → INPT4
+ *   Port 1 (right): col 0 → INPT2,  col 1 → INPT3,  col 2 → INPT5
+ *
+ * SWCHA output bits, per port, are (from row 0 to row 3):
+ *   Port 0 rows: bit 7, bit 6, bit 5, bit 4   (high nibble)
+ *   Port 1 rows: bit 3, bit 2, bit 1, bit 0   (low nibble)
+ * When a row driver is pulled LOW (output 0) AND a button in that row is
+ * pressed, that button's column pin reads LOW. Otherwise column reads HIGH.
+ *
+ * Retropad binding (our design; 12 buttons total, grouping the D-pad on
+ * keypad 2/4/6/8 — the "arrow keys" of a phone keypad — so center button
+ * "5" sits naturally on the primary action button):
+ *   Keypad  Retropad        Column Row
+ *     1     Y               0      0
+ *     2     UP              1      0
+ *     3     L               2      0
+ *     4     LEFT            0      1
+ *     5     A               1      1
+ *     6     RIGHT           2      1
+ *     7     X               0      2
+ *     8     DOWN            1      2
+ *     9     L2              2      2
+ *     *     L3              0      3
+ *     0     B               1      3
+ *     #     R               2      3
+ * START remains free as the console Reset button (so games like Star
+ * Raiders can be (re)started from the keypad overlay without switching
+ * back to the joystick overlay). SELECT, R2, R3 are unbound on the
+ * keypad overlay. */
+#define KP_1  0
+#define KP_2  1
+#define KP_3  2
+#define KP_4  3
+#define KP_5  4
+#define KP_6  5
+#define KP_7  6
+#define KP_8  7
+#define KP_9  8
+#define KP_ST 9   /* * */
+#define KP_0  10
+#define KP_HS 11  /* # */
+
+static const struct {
+    uint8_t retro_id;
+    uint8_t bit;
+} keypad_map[12] = {
+    { RETRO_DEVICE_ID_JOYPAD_Y,     KP_1  },
+    { RETRO_DEVICE_ID_JOYPAD_UP,    KP_2  },
+    { RETRO_DEVICE_ID_JOYPAD_L,     KP_3  },
+    { RETRO_DEVICE_ID_JOYPAD_LEFT,  KP_4  },
+    { RETRO_DEVICE_ID_JOYPAD_A,     KP_5  },
+    { RETRO_DEVICE_ID_JOYPAD_RIGHT, KP_6  },
+    { RETRO_DEVICE_ID_JOYPAD_X,     KP_7  },
+    { RETRO_DEVICE_ID_JOYPAD_DOWN,  KP_8  },
+    { RETRO_DEVICE_ID_JOYPAD_L2,    KP_9  },
+    { RETRO_DEVICE_ID_JOYPAD_L3,    KP_ST },
+    { RETRO_DEVICE_ID_JOYPAD_B,     KP_0  },
+    { RETRO_DEVICE_ID_JOYPAD_R,     KP_HS },
+};
+
+/* Which column contains each key (indexed by KP_*). */
+static const uint8_t kp_col[12] = {
+    0, 1, 2,  /* 1, 2, 3 */
+    0, 1, 2,  /* 4, 5, 6 */
+    0, 1, 2,  /* 7, 8, 9 */
+    0, 1, 2,  /* *, 0, # */
+};
+/* Which row contains each key (indexed by KP_*). */
+static const uint8_t kp_row[12] = {
+    0, 0, 0,
+    1, 1, 1,
+    2, 2, 2,
+    3, 3, 3,
+};
+
+/* Update INPT bits for any keypad-mode port, based on current SWCHA
+ * output state + keypad button state. Called from riot_write's pa_changed
+ * callback whenever the CPU strobes SWCHA or changes its DDR, and also
+ * directly from poll_inputs (once per frame) to seed the initial state. */
+static void keypad_update(void *ctx)
+{
+    unsigned p;
+    uint8_t  pa_effective;
+    /* Effective Port A pin state: bits with DDR=output reflect pa_out;
+     * bits with DDR=input float high (1). */
+    pa_effective = (uint8_t)((sys.riot.pa_out & sys.riot.pa_ddr)
+                 | (uint8_t)~sys.riot.pa_ddr);
+    (void)ctx;
+
+    for (p = 0; p < 2; p++) {
+        uint8_t  col_inpt[3];   /* col0, col1, col2: default HIGH (not pressed) */
+        unsigned col;
+        int      key;
+        uint8_t  row_mask[4];   /* 1 if that row's driver is pulled LOW */
+        int      r;
+
+        if (sys.port_device[p] != DEV_KEYPAD) continue;
+
+        col_inpt[0] = 0x80;
+        col_inpt[1] = 0x80;
+        col_inpt[2] = 0x80;
+
+        /* Row r (0..3) is driven by DB-9 Pins One through Four.
+         * Pin One = UP   = SWCHA bit 4 (port 0) / bit 0 (port 1)
+         * Pin Two = DOWN = bit 5 / bit 1
+         * Pin Three = LEFT = bit 6 / bit 2
+         * Pin Four = RIGHT = bit 7 / bit 3
+         * So row r maps to bit (4+r) for port 0, bit r for port 1. */
+        for (r = 0; r < 4; r++) {
+            uint8_t bit_idx = (uint8_t)((p ? 0 : 4) + r);
+            uint8_t bit = (uint8_t)(1u << bit_idx);
+            row_mask[r] = ((pa_effective & bit) == 0) ? 1 : 0;
+        }
+
+        for (key = 0; key < 12; key++) {
+            if (!(sys.keypad_pressed[p] & (1u << key))) continue;
+            if (!row_mask[kp_row[key]]) continue;
+            col = kp_col[key];
+            col_inpt[col] = 0x00;   /* column pulled LOW */
+        }
+
+        /* Map columns to INPT indices. */
+        if (p == 0) {
+            sys.tia.inpt[0] = col_inpt[0];
+            sys.tia.inpt[1] = col_inpt[1];
+            sys.tia.inpt[4] = col_inpt[2];
+        } else {
+            sys.tia.inpt[2] = col_inpt[0];
+            sys.tia.inpt[3] = col_inpt[1];
+            sys.tia.inpt[5] = col_inpt[2];
+        }
+    }
+}
+
 static void poll_inputs(void)
 {
     uint8_t pa = 0xFF;
@@ -301,8 +451,10 @@ static void poll_inputs(void)
             else        pa = pa_bits_joypad(pa, p);
             break;
         case DEV_KEYPAD:
-            /* TODO: keypad matrix scan — requires wiring tia_read to riot
-             * state, deferred to a follow-up task. For now: all bits high. */
+            /* Keypad leaves SWCHA high nibble (port 0) / low nibble (port 1)
+             * untouched — the console drives rows by writing SWCHA, and the
+             * keypad reports columns via INPT, not via SWCHA reads. The
+             * per-port nibble here stays active-high (no movement bits). */
             break;
         case DEV_JOYPAD:
         default:
@@ -326,7 +478,14 @@ static void poll_inputs(void)
      * Button → switch assignment follows the common 2600 touchscreen overlay
      * (common-overlays/gamepads/Named_Overlays/Atari - 2600.cfg): each switch
      * gets an adjacent row-pair (L/R for left-diff, L2/R2 for right-diff,
-     * L3/R3 for TV type), upper = A, lower = B. */
+     * L3/R3 for TV type), upper = A, lower = B.
+     *
+     * Skip when port 0 is in keypad mode — L, R, L2, L3 are keypad keys
+     * in that configuration and pressing them should NOT toggle the console
+     * switches. Users can switch back to the joystick overlay to reach the
+     * toggles, or use a physical gamepad whose shoulder buttons aren't
+     * consumed by the keypad overlay. */
+    if (sys.port_device[0] != DEV_KEYPAD)
     {
         uint8_t edge_now = 0;
         if (js(0, RETRO_DEVICE_ID_JOYPAD_L))  edge_now |= 0x01;
@@ -364,8 +523,26 @@ static void poll_inputs(void)
     if (sys.sw_right_diff_a) pb |= 0x80;
     sys.riot.pb_in = pb;
 
+    /* Read retropad → keypad button state for any keypad-mode port. The
+     * actual INPT bits get computed by keypad_update() after we finish
+     * updating the pressed-key bitmap, and again whenever the CPU writes
+     * SWCHA / SWACNT (via the riot pa_changed callback). */
+    for (p = 0; p < 2; p++) {
+        if (sys.port_device[p] != DEV_KEYPAD) { sys.keypad_pressed[p] = 0; continue; }
+        {
+            uint16_t m = 0;
+            int      k;
+            for (k = 0; k < 12; k++)
+                if (js(p, keypad_map[k].retro_id))
+                    m |= (uint16_t)(1u << keypad_map[k].bit);
+            sys.keypad_pressed[p] = m;
+        }
+    }
+
     /* INPT4/5: joystick/driving fire buttons (bit 7 only; rest are 0).
-     * Paddles don't use INPT4/5 (their triggers are on SWCHA). */
+     * Paddles don't use INPT4/5 (their triggers are on SWCHA). Keypad
+     * mode uses INPT4/5 as its column-2 sense line; that's set below by
+     * keypad_update(). */
     for (p = 0; p < 2; p++) {
         unsigned idx = 4 + p;
         switch (sys.port_device[p]) {
@@ -376,12 +553,18 @@ static void poll_inputs(void)
             sys.tia.inpt[idx] = (p == 0 && js(p, RETRO_DEVICE_ID_JOYPAD_B))
                               ? 0x00 : 0x80;
             break;
+        case DEV_KEYPAD:
+            /* set by keypad_update() below */
+            break;
         case DEV_JOYPAD:
         default:
             sys.tia.inpt[idx] = js(p, RETRO_DEVICE_ID_JOYPAD_B) ? 0x00 : 0x80;
             break;
         }
     }
+
+    /* Compute keypad INPT bits with the freshly-polled button state. */
+    keypad_update(NULL);
 
     /* INPT0-3: paddle potentiometer capacitor dumps. Each port contributes
      * two paddles (A = LEFT stick X, B = RIGHT stick X) when in paddle
@@ -492,6 +675,8 @@ bool retro_load_game(const struct retro_game_info *info)
 
     tia_init(&sys.tia);
     riot_init(&sys.riot);
+    sys.riot.pa_changed     = keypad_update;
+    sys.riot.pa_changed_ctx = NULL;
     bus_init(&sys.bus, &sys.cpu, &sys.tia, &sys.riot, &sys.cart);
     {
         struct cpu_bus cb;
