@@ -705,7 +705,7 @@ unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
  * Serialising the full ROM at max size (not just sys.cart.size) keeps the
  * serialize_size constant, which libretro prefers — the frontend only calls
  * retro_serialize_size once, then reuses the buffer. */
-#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1)
+#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1 + 1)
 #define SYS_SER_BYTES  1                /* packed console-switch state */
 
 size_t retro_serialize_size(void)
@@ -737,6 +737,7 @@ bool retro_serialize(void *data, size_t size)
     memcpy(p, sys.cart.e0_slots, 4);             p += 4;
     memcpy(p, sys.cart.sc_ram, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
     *p++ = sys.cart.sc_enabled ? 1u : 0u;
+    *p++ = sys.cart.fe_pending ? 1u : 0u;
 
     *p++ = (uint8_t)((sys.sw_color        ? 0x01u : 0u)
                    | (sys.sw_left_diff_a  ? 0x02u : 0u)
@@ -767,6 +768,7 @@ bool retro_unserialize(const void *data, size_t size)
     memcpy(sys.cart.e0_slots, p, 4);            p += 4;
     memcpy(sys.cart.sc_ram, p, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
     sys.cart.sc_enabled = *p++ != 0;
+    sys.cart.fe_pending = *p++ != 0;
 
     {
         uint8_t sw = *p++;

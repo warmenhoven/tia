@@ -54,6 +54,23 @@ static uint8_t detect_8k_mapper(const uint8_t *rom, size_t size)
                || find_bytes(rom, size, f3_b, 2)
                || find_bytes(rom, size, f3_c, 2);
 
+    /* FE (Activision): detected by specific 5-byte signatures. These
+     * patterns are JSR sequences that trigger the $01FE hotspot during
+     * stack operations. Attributed to the MESS project. */
+    {
+        static const uint8_t fe_a[5] = { 0x20, 0x00, 0xD0, 0xC6, 0xC5 }; /* Decathlon */
+        static const uint8_t fe_b[5] = { 0x20, 0xC3, 0xF8, 0xA5, 0x82 }; /* Robot Tank */
+        static const uint8_t fe_c[5] = { 0xD0, 0xFB, 0x20, 0x73, 0xFE }; /* Space Shuttle */
+        static const uint8_t fe_d[5] = { 0xD0, 0xFB, 0x20, 0x68, 0xFE }; /* Space Shuttle SECAM */
+        static const uint8_t fe_e[5] = { 0x20, 0x00, 0xF0, 0x84, 0xD6 }; /* Thwocker */
+        int have_fe = find_bytes(rom, size, fe_a, 5)
+                   || find_bytes(rom, size, fe_b, 5)
+                   || find_bytes(rom, size, fe_c, 5)
+                   || find_bytes(rom, size, fe_d, 5)
+                   || find_bytes(rom, size, fe_e, 5);
+        if (have_fe && !have_f8) return CART_MAPPER_FE;
+    }
+
     if (have_e0 && !have_f8) return CART_MAPPER_E0;
     if (have_f8)             return CART_MAPPER_F8;
     if (have_3f)             return CART_MAPPER_3F;
@@ -201,6 +218,11 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
             return c->data[c->bank * 2048u + a];
         return c->data[(c->size - 2048) + (a - 0x800)];
 
+    case CART_MAPPER_FE:
+        /* No in-cart-space hotspots. Bank switching happens via
+         * cart_snoop_bus when the CPU accesses $01FE (RIOT space). */
+        return c->data[c->bank * 4096u + a];
+
     default:
         return 0;
     }
@@ -250,6 +272,10 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
         /* Bank switch is triggered by low-address writes (snoop_write).
          * Writes inside the cart window itself are ignored. */
         return;
+
+    case CART_MAPPER_FE:
+        /* ROM only; writes ignored. Bank switching is via $01FE snoop. */
+        return;
     }
 }
 
@@ -264,4 +290,19 @@ void cart_snoop_write(struct cart *c, uint16_t addr, uint8_t data)
         if (num_banks == 0) num_banks = 1;
         c->bank = (uint8_t)(data % num_banks);
     }
+}
+
+void cart_snoop_bus(struct cart *c, uint16_t addr, uint8_t data)
+{
+    if (c->mapper != CART_MAPPER_FE) return;
+
+    /* FE state machine: if the PREVIOUS access hit $01FE, the data byte
+     * on THIS access selects the bank. Then clear the flag regardless.
+     * D5=0 → bank 1; D5=1 → bank 0 (equivalently: (data>>5)^7, low bit). */
+    if (c->fe_pending) {
+        c->bank = (uint8_t)(((data >> 5) ^ 7) & 1);
+        c->fe_pending = false;
+        return;
+    }
+    c->fe_pending = ((addr & 0x1FFF) == 0x01FE);
 }

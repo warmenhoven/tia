@@ -34,9 +34,14 @@ uint8_t bus_read(void *ctx, uint16_t addr)
     bus_tick_one_cycle(b);
 
     a = (uint16_t)(addr & 0x1FFF);          /* 13-bit address bus */
-    if (a & 0x1000) return cart_read(b->cart, a);
-    if (a & 0x0080) return riot_read(b->riot, a);
-    return tia_read(b->tia, a);
+    {
+        uint8_t v;
+        if (a & 0x1000)      v = cart_read(b->cart, a);
+        else if (a & 0x0080) v = riot_read(b->riot, a);
+        else                 v = tia_read(b->tia, a);
+        cart_snoop_bus(b->cart, a, v);
+        return v;
+    }
 }
 
 void bus_write(void *ctx, uint16_t addr, uint8_t data)
@@ -66,4 +71,5 @@ void bus_write(void *ctx, uint16_t addr, uint8_t data)
     if (a & 0x1000)         cart_write(b->cart, a, data);
     else if (a & 0x0080)    riot_write(b->riot, a, data);
     else                    tia_write(b->tia, a, data);
+    cart_snoop_bus(b->cart, a, data);
 }
