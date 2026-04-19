@@ -90,7 +90,7 @@ static int test_hblank_pixels_not_written(void)
     return 0;
 }
 
-static int test_vblank_skips_pixel_writes(void)
+static int test_vblank_writes_black(void)
 {
     struct tia t;
     int x;
@@ -98,10 +98,10 @@ static int test_vblank_skips_pixel_writes(void)
     /* Fill scanline 0 with sentinel. */
     for (x = 0; x < TIA_VISIBLE_WIDTH; x++) t.fb[x] = 0xDEADBEEF;
     tia_write(&t, 0x01, 0x02);             /* VBLANK on */
-    tia_write(&t, 0x09, 0x50);
+    tia_write(&t, 0x09, 0x50);             /* COLUBK — ignored during VBLANK */
     full_scanline(&t);
     for (x = 0; x < TIA_VISIBLE_WIDTH; x++)
-        ASSERT_EQ(t.fb[x], 0xDEADBEEF);
+        ASSERT_EQ(t.fb[x], t.palette[0]);
     return 0;
 }
 
@@ -216,7 +216,7 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_wsync_asserts_rdy_then_releases_at_scanline_start);
     RUN_TEST(test_colubk_fills_visible_scanline);
     RUN_TEST(test_hblank_pixels_not_written);
-    RUN_TEST(test_vblank_skips_pixel_writes);
+    RUN_TEST(test_vblank_writes_black);
     RUN_TEST(test_vsync_rising_edge_signals_frame);
     RUN_TEST(test_vsync_scanline_doesnt_advance);
     RUN_TEST(test_rsync_aligns_hpos_near_hsync);

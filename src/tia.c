@@ -447,12 +447,19 @@ void tia_tick(struct tia *t)
      * visible scanline (Adventure's yellow castle top row exhibited this
      * as an 8-pixel black stub). */
     if (t->hpos >= TIA_HBLANK_CLOCKS &&
-        !t->vblank && !t->vsync &&
+        !t->vsync &&
         t->scanline < TIA_MAX_SCANLINES) {
         uint16_t x = (uint16_t)(t->hpos - TIA_HBLANK_CLOCKS);
         uint16_t y = t->scanline;
         uint32_t out;
-        if (t->hmove_blank > 0) {
+        if (t->vblank) {
+            /* VBLANK active — beam is visible to the CRT (video signal is
+             * produced) but the picture is forced black. Write black to fb
+             * so the libretro layer's 228-row output has clean black
+             * padding at top/bottom instead of stale content from the
+             * previous frame leaking through. */
+            out = t->palette[0];
+        } else if (t->hmove_blank > 0) {
             out = t->palette[0];          /* HMOVE comb: black */
         } else {
             out = t->palette[(pixel_color(t, x) >> 1) & 0x7F];

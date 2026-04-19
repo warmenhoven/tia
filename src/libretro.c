@@ -25,7 +25,7 @@
  * would land at a different output Y each frame and stationary content would
  * appear to jitter vertically. The per-frame anchor (offset) still tracks
  * visible_start so games with different visible regions center correctly. */
-#define FRAME_HEIGHT_NOMINAL 192
+#define FRAME_HEIGHT_NOMINAL 228
 /* Fallback anchor used before the game has performed a VBLANK transition
  * (cold boot / a few frames of boot where visible_start is still the
  * 0xFFFF sentinel). */
@@ -603,9 +603,16 @@ void retro_run(void)
     sys.tia.frame_ready = false;
 
     {
-        uint16_t offset = (sys.tia.visible_start != 0xFFFF)
+        /* 228-row output: 18 rows of top VBLANK padding (rendered black in
+         * tia_tick) + ~189 rows of visible content + bottom VBLANK/overscan
+         * padding. Anchor to visible_start - 18 so the top-VBLANK padding
+         * lands at the top of the output frame, which is where the NTSC
+         * video signal starts each field; most 2600 cores follow the same
+         * convention so screenshots align across cores. */
+        uint16_t anchor = (sys.tia.visible_start != 0xFFFF)
                         ? sys.tia.visible_start
                         : SHIP_OFFSET_FALLBACK;
+        uint16_t offset = (anchor > 18) ? (uint16_t)(anchor - 18) : 0;
         uint16_t height = FRAME_HEIGHT_NOMINAL;
         if (offset + height > TIA_MAX_SCANLINES)
             height = (uint16_t)(TIA_MAX_SCANLINES - offset);
