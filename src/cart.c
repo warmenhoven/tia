@@ -134,6 +134,16 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
         return true;
 
     default:
+        /* DPC (Pitfall II): 8K program + 2K display = 10K, or 10K + 255
+         * bytes of frequency table = 10495. Accept either. */
+        if (size == 10240 || size == 10495) {
+            memcpy(c->data, rom, size);
+            c->size   = (uint32_t)size;
+            c->mapper = CART_MAPPER_DPC;
+            c->bank   = 1;
+            c->dpc_random = 1;
+            return true;
+        }
         return false;
     }
 }
@@ -170,6 +180,59 @@ static void hotspot_e0(struct cart *c, uint16_t a)
     if      (a >= 0xFE0 && a <= 0xFE7) c->e0_slots[0] = (uint8_t)(a & 7);
     else if (a >= 0xFE8 && a <= 0xFEF) c->e0_slots[1] = (uint8_t)(a & 7);
     else if (a >= 0xFF0 && a <= 0xFF7) c->e0_slots[2] = (uint8_t)(a & 7);
+}
+
+/* ============================================================
+ *   DPC co-processor helpers
+ * ============================================================ */
+
+static void dpc_clock_rng(struct cart *c)
+{
+    /* 8-bit LFSR: feedback = NOT(XOR of bits 7, 5, 4, 3). */
+    static const uint8_t f[16] = {
+        1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1
+    };
+    uint8_t bit = f[((c->dpc_random >> 3) & 0x07)
+                   | ((c->dpc_random & 0x80) ? 0x08 : 0x00)];
+    c->dpc_random = (uint8_t)((c->dpc_random << 1) | bit);
+}
+
+static void dpc_update_music_fetchers(struct cart *c)
+{
+    /* NTSC 6507 clock rate. For PAL/SECAM this would differ slightly. */
+    static const double CLOCK_RATE = 1193191.66666667;
+    static const double DPC_PITCH  = 20000.0;
+    uint32_t elapsed, whole;
+    double clocks;
+    int x;
+
+    if (!c->cpu_cycles) return;
+    elapsed = (uint32_t)(*c->cpu_cycles - c->dpc_audio_cycles);
+    c->dpc_audio_cycles = *c->cpu_cycles;
+
+    clocks = ((DPC_PITCH * elapsed) / CLOCK_RATE) + c->dpc_frac_clocks;
+    whole  = (uint32_t)clocks;
+    c->dpc_frac_clocks = clocks - (double)whole;
+    if (whole == 0) return;
+
+    for (x = 5; x <= 7; x++) {
+        int32_t top, newLow;
+        if (!c->dpc_music_mode[x - 5]) continue;
+        top = (int32_t)c->dpc_tops[x] + 1;
+        newLow = (int32_t)(c->dpc_counters[x] & 0x00FF);
+        if (c->dpc_tops[x] != 0) {
+            newLow -= (int32_t)(whole % (uint32_t)top);
+            if (newLow < 0) newLow += top;
+        } else {
+            newLow = 0;
+        }
+        if (newLow <= (int32_t)c->dpc_bottoms[x])
+            c->dpc_flags[x] = 0x00;
+        else if (newLow <= (int32_t)c->dpc_tops[x])
+            c->dpc_flags[x] = 0xFF;
+        c->dpc_counters[x] = (uint16_t)((c->dpc_counters[x] & 0x0700)
+                            | (uint16_t)newLow);
+    }
 }
 
 /* ============================================================
@@ -222,6 +285,70 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
         /* No in-cart-space hotspots. Bank switching happens via
          * cart_snoop_bus when the CPU accesses $01FE (RIOT space). */
         return c->data[c->bank * 4096u + a];
+
+    case CART_MAPPER_DPC: {
+        dpc_clock_rng(c);
+
+        if (a < 0x0040) {
+            /* DPC read port. Bits [5:3] = function, [2:0] = fetcher index. */
+            uint8_t idx  = (uint8_t)(a & 0x07);
+            uint8_t func = (uint8_t)((a >> 3) & 0x07);
+            uint8_t result = 0;
+
+            /* Update flag for this fetcher before returning data. */
+            if ((c->dpc_counters[idx] & 0xFF) == c->dpc_tops[idx])
+                c->dpc_flags[idx] = 0xFF;
+            else if ((c->dpc_counters[idx] & 0xFF) == c->dpc_bottoms[idx])
+                c->dpc_flags[idx] = 0x00;
+
+            switch (func) {
+            case 0: /* random number (DF0-3) or music amplitude (DF4-7) */
+                if (idx < 4) {
+                    result = c->dpc_random;
+                } else {
+                    static const uint8_t amp[8] = {
+                        0x00, 0x04, 0x05, 0x09, 0x06, 0x0A, 0x0B, 0x0F
+                    };
+                    uint8_t m = 0;
+                    dpc_update_music_fetchers(c);
+                    if (c->dpc_music_mode[0] && c->dpc_flags[5]) m |= 0x01;
+                    if (c->dpc_music_mode[1] && c->dpc_flags[6]) m |= 0x02;
+                    if (c->dpc_music_mode[2] && c->dpc_flags[7]) m |= 0x04;
+                    result = amp[m];
+                }
+                break;
+            case 1: /* display data at counter */
+                result = c->data[8192 + (2047 - (c->dpc_counters[idx] & 0x7FF))];
+                break;
+            case 2: /* display data AND'd with flag */
+                result = (uint8_t)(c->data[8192 + (2047 - (c->dpc_counters[idx] & 0x7FF))]
+                        & c->dpc_flags[idx]);
+                break;
+            case 7: /* flag register */
+                result = c->dpc_flags[idx];
+                break;
+            default:
+                result = 0;
+                break;
+            }
+
+            /* Decrement counter (unless music-mode fetcher). */
+            if (idx < 5 || !c->dpc_music_mode[idx - 5])
+                c->dpc_counters[idx] = (uint16_t)((c->dpc_counters[idx] - 1) & 0x07FF);
+
+            return result;
+        }
+        if (a < 0x0080) {
+            /* DPC write port accessed via a READ — unusual but must not
+             * fall through to program ROM. Return 0. */
+            return 0;
+        }
+        /* $1080-$1FFF: program ROM with F8-style bank switching.
+         * The first 0x80 bytes of each 4K bank are shadowed by the DPC
+         * register ports and never reached here. */
+        hotspot_f8(c, a);
+        return c->data[c->bank * 4096u + a];
+    }
 
     default:
         return 0;
@@ -276,6 +403,47 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
     case CART_MAPPER_FE:
         /* ROM only; writes ignored. Bank switching is via $01FE snoop. */
         return;
+
+    case CART_MAPPER_DPC: {
+        dpc_clock_rng(c);
+
+        if (a >= 0x0040 && a < 0x0080) {
+            uint8_t idx  = (uint8_t)(a & 0x07);
+            uint8_t func = (uint8_t)((a >> 3) & 0x07);
+            switch (func) {
+            case 0: /* set top + clear flag */
+                c->dpc_tops[idx] = data;
+                c->dpc_flags[idx] = 0x00;
+                break;
+            case 1: /* set bottom */
+                c->dpc_bottoms[idx] = data;
+                break;
+            case 2: /* set counter low */
+                if (idx >= 5 && c->dpc_music_mode[idx - 5])
+                    c->dpc_counters[idx] = (uint16_t)((c->dpc_counters[idx] & 0x0700)
+                                         | c->dpc_tops[idx]);
+                else
+                    c->dpc_counters[idx] = (uint16_t)((c->dpc_counters[idx] & 0x0700)
+                                         | data);
+                break;
+            case 3: /* set counter high + music mode */
+                c->dpc_counters[idx] = (uint16_t)(((uint16_t)(data & 0x07) << 8)
+                                     | (c->dpc_counters[idx] & 0x00FF));
+                if (idx >= 5)
+                    c->dpc_music_mode[idx - 5] = (data & 0x10) != 0;
+                break;
+            case 6: /* reset random number generator */
+                c->dpc_random = 1;
+                break;
+            default:
+                break;
+            }
+            return;
+        }
+        /* Program-ROM writes: just handle F8 hotspots. */
+        hotspot_f8(c, a);
+        return;
+    }
     }
 }
 

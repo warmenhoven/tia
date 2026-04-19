@@ -692,6 +692,7 @@ bool retro_load_game(const struct retro_game_info *info)
         cb.ctx   = &sys.bus;
         cpu_init(&sys.cpu, cb);
     }
+    sys.cart.cpu_cycles = &sys.cpu.cycles;
     cpu_reset(&sys.cpu);
     sys.loaded = true;
     return true;
@@ -712,7 +713,10 @@ unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
  * Serialising the full ROM at max size (not just sys.cart.size) keeps the
  * serialize_size constant, which libretro prefers — the frontend only calls
  * retro_serialize_size once, then reuses the buffer. */
-#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1 + 1)
+/* DPC state: 8 tops + 8 bottoms + 16 counter bytes + 8 flags + 3 music
+ * mode + 1 random + 8 audio_cycles + 8 frac_clocks = 60 bytes. */
+#define CART_DPC_SER_BYTES 60
+#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1 + 1 + CART_DPC_SER_BYTES)
 #define SYS_SER_BYTES  1                /* packed console-switch state */
 
 size_t retro_serialize_size(void)
@@ -746,6 +750,25 @@ bool retro_serialize(void *data, size_t size)
     *p++ = sys.cart.sc_enabled ? 1u : 0u;
     *p++ = sys.cart.fe_pending ? 1u : 0u;
 
+    /* DPC state */
+    memcpy(p, sys.cart.dpc_tops, 8);     p += 8;
+    memcpy(p, sys.cart.dpc_bottoms, 8);  p += 8;
+    { int i; for (i = 0; i < 8; i++) {
+        p[0] = (uint8_t)(sys.cart.dpc_counters[i] & 0xFF);
+        p[1] = (uint8_t)(sys.cart.dpc_counters[i] >> 8);
+        p += 2;
+    }}
+    memcpy(p, sys.cart.dpc_flags, 8);    p += 8;
+    p[0] = sys.cart.dpc_music_mode[0] ? 1u : 0u;
+    p[1] = sys.cart.dpc_music_mode[1] ? 1u : 0u;
+    p[2] = sys.cart.dpc_music_mode[2] ? 1u : 0u;
+    p += 3;
+    *p++ = sys.cart.dpc_random;
+    { int i; for (i = 0; i < 8; i++) {
+        p[i] = (uint8_t)(sys.cart.dpc_audio_cycles >> (i * 8));
+    } p += 8; }
+    memcpy(p, &sys.cart.dpc_frac_clocks, 8); p += 8;
+
     *p++ = (uint8_t)((sys.sw_color        ? 0x01u : 0u)
                    | (sys.sw_left_diff_a  ? 0x02u : 0u)
                    | (sys.sw_right_diff_a ? 0x04u : 0u));
@@ -776,6 +799,26 @@ bool retro_unserialize(const void *data, size_t size)
     memcpy(sys.cart.sc_ram, p, CART_SC_RAM_SIZE); p += CART_SC_RAM_SIZE;
     sys.cart.sc_enabled = *p++ != 0;
     sys.cart.fe_pending = *p++ != 0;
+
+    /* DPC state */
+    memcpy(sys.cart.dpc_tops, p, 8);     p += 8;
+    memcpy(sys.cart.dpc_bottoms, p, 8);  p += 8;
+    { int i; for (i = 0; i < 8; i++) {
+        sys.cart.dpc_counters[i] = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+        p += 2;
+    }}
+    memcpy(sys.cart.dpc_flags, p, 8);    p += 8;
+    sys.cart.dpc_music_mode[0] = p[0] != 0;
+    sys.cart.dpc_music_mode[1] = p[1] != 0;
+    sys.cart.dpc_music_mode[2] = p[2] != 0;
+    p += 3;
+    sys.cart.dpc_random = *p++;
+    { int i; sys.cart.dpc_audio_cycles = 0;
+      for (i = 0; i < 8; i++)
+        sys.cart.dpc_audio_cycles |= ((uint64_t)p[i] << (i * 8));
+      p += 8;
+    }
+    memcpy(&sys.cart.dpc_frac_clocks, p, 8); p += 8;
 
     {
         uint8_t sw = *p++;
