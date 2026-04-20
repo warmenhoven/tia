@@ -852,15 +852,35 @@ static void op_69(struct cpu *c) { do_adc(c, r8(c, c->pc++)); }
 /* 6A: ROR A */
 static void op_6A(struct cpu *c) { r8(c, c->pc); c->a = do_ror(c, c->a); }
 
-/* 6B: ARR #imm (undoc) */
+/* 6B: ARR #imm (undoc)
+ * In decimal mode, ARR performs BCD-adjusted nibble fixups that set C and
+ * tweak the low nibble. N is set to the input carry (the bit shifted in),
+ * and V compares the pre-adjust result against the AND value. */
 static void op_6B(struct cpu *c)
 {
     uint8_t m = r8(c, c->pc++);
-    uint8_t t = (uint8_t)(c->a & m);
-    c->a = (uint8_t)((t >> 1) | ((c->p & CPU_FLAG_C) ? 0x80 : 0x00));
-    snz(c, c->a);
-    set_flag(c, CPU_FLAG_C, (c->a & 0x40) != 0);
-    set_flag(c, CPU_FLAG_V, (((c->a >> 6) ^ (c->a >> 5)) & 0x01) != 0);
+    uint8_t and_val = (uint8_t)(c->a & m);
+    uint8_t c_in = (c->p & CPU_FLAG_C) ? 1u : 0u;
+    uint8_t result = (uint8_t)((and_val >> 1) | (c_in << 7));
+
+    if (c->p & CPU_FLAG_D) {
+        set_flag(c, CPU_FLAG_N, c_in != 0);
+        set_flag(c, CPU_FLAG_Z, result == 0);
+        set_flag(c, CPU_FLAG_V, ((result ^ and_val) & 0x40) != 0);
+        if (((and_val & 0x0F) + (and_val & 0x01)) > 0x05)
+            result = (uint8_t)((result & 0xF0) | ((result + 0x06) & 0x0F));
+        if (((and_val & 0xF0) + (and_val & 0x10)) > 0x50) {
+            result = (uint8_t)(result + 0x60);
+            set_flag(c, CPU_FLAG_C, 1);
+        } else {
+            set_flag(c, CPU_FLAG_C, 0);
+        }
+    } else {
+        snz(c, result);
+        set_flag(c, CPU_FLAG_C, (result & 0x40) != 0);
+        set_flag(c, CPU_FLAG_V, (((result >> 6) ^ (result >> 5)) & 0x01) != 0);
+    }
+    c->a = result;
 }
 
 /* 6C: JMP (abs) — with the page-boundary bug */
@@ -1027,11 +1047,20 @@ static void op_90(struct cpu *c) { do_branch(c, !(c->p & CPU_FLAG_C)); }
 /* 91: STA (zp),Y */
 static void op_91(struct cpu *c) { uint16_t ea = ea_izy_rw(c); w8(c, ea, c->a); }
 
-/* 93: AHX (zp),Y (unstable) */
+/* 93: AHX (zp),Y (unstable)
+ * value = A & X & (baseH + 1); on page-cross the address's high byte is
+ * also latched to the value (the "dropped write" address corruption). */
 static void op_93(struct cpu *c)
 {
-    uint16_t ea = ea_izy_rw(c);
-    w8(c, ea, (uint8_t)(c->a & c->x & (uint8_t)((ea >> 8) + 1)));
+    uint8_t zp = r8(c, c->pc++);
+    uint8_t lo = r8(c, zp);
+    uint8_t hi = r8(c, (uint8_t)(zp + 1));
+    uint8_t eff_lo = (uint8_t)(lo + c->y);
+    int cross = ((int)lo + (int)c->y) > 0xFF;
+    uint8_t value = (uint8_t)(c->a & c->x & (uint8_t)(hi + 1));
+    uint8_t addr_hi = cross ? value : hi;
+    r8(c, (uint16_t)(((uint16_t)hi << 8) | eff_lo));
+    w8(c, (uint16_t)(((uint16_t)addr_hi << 8) | eff_lo), value);
 }
 
 /* 94: STY zp,X */
@@ -1055,36 +1084,63 @@ static void op_99(struct cpu *c) { uint16_t ea = ea_abs_y_rw(c); w8(c, ea, c->a)
 /* 9A: TXS */
 static void op_9A(struct cpu *c) { r8(c, c->pc); c->s = c->x; }
 
-/* 9B: TAS abs,Y (unstable) */
+/* 9B: TAS abs,Y (unstable)
+ * S = A & X; write S & (baseH+1). Page-cross corrupts addr hi (see 93). */
 static void op_9B(struct cpu *c)
 {
-    uint16_t ea = ea_abs_y_rw(c);
+    uint8_t lo = r8(c, c->pc++);
+    uint8_t hi = r8(c, c->pc++);
+    uint8_t eff_lo = (uint8_t)(lo + c->y);
+    int cross = ((int)lo + (int)c->y) > 0xFF;
+    uint8_t value;
+    uint8_t addr_hi;
     c->s = (uint8_t)(c->a & c->x);
-    w8(c, ea, (uint8_t)(c->s & (uint8_t)((ea >> 8) + 1)));
+    value = (uint8_t)(c->s & (uint8_t)(hi + 1));
+    addr_hi = cross ? value : hi;
+    r8(c, (uint16_t)(((uint16_t)hi << 8) | eff_lo));
+    w8(c, (uint16_t)(((uint16_t)addr_hi << 8) | eff_lo), value);
 }
 
-/* 9C: SHY abs,X (unstable) */
+/* 9C: SHY abs,X (unstable): value = Y & (baseH+1), same address-corrupt */
 static void op_9C(struct cpu *c)
 {
-    uint16_t ea = ea_abs_x_rw(c);
-    w8(c, ea, (uint8_t)(c->y & (uint8_t)((ea >> 8) + 1)));
+    uint8_t lo = r8(c, c->pc++);
+    uint8_t hi = r8(c, c->pc++);
+    uint8_t eff_lo = (uint8_t)(lo + c->x);
+    int cross = ((int)lo + (int)c->x) > 0xFF;
+    uint8_t value = (uint8_t)(c->y & (uint8_t)(hi + 1));
+    uint8_t addr_hi = cross ? value : hi;
+    r8(c, (uint16_t)(((uint16_t)hi << 8) | eff_lo));
+    w8(c, (uint16_t)(((uint16_t)addr_hi << 8) | eff_lo), value);
 }
 
 /* 9D: STA abs,X */
 static void op_9D(struct cpu *c) { uint16_t ea = ea_abs_x_rw(c); w8(c, ea, c->a); }
 
-/* 9E: SHX abs,Y (unstable) */
+/* 9E: SHX abs,Y (unstable): value = X & (baseH+1), same address-corrupt */
 static void op_9E(struct cpu *c)
 {
-    uint16_t ea = ea_abs_y_rw(c);
-    w8(c, ea, (uint8_t)(c->x & (uint8_t)((ea >> 8) + 1)));
+    uint8_t lo = r8(c, c->pc++);
+    uint8_t hi = r8(c, c->pc++);
+    uint8_t eff_lo = (uint8_t)(lo + c->y);
+    int cross = ((int)lo + (int)c->y) > 0xFF;
+    uint8_t value = (uint8_t)(c->x & (uint8_t)(hi + 1));
+    uint8_t addr_hi = cross ? value : hi;
+    r8(c, (uint16_t)(((uint16_t)hi << 8) | eff_lo));
+    w8(c, (uint16_t)(((uint16_t)addr_hi << 8) | eff_lo), value);
 }
 
-/* 9F: AHX abs,Y (unstable) */
+/* 9F: AHX abs,Y (unstable): value = A & X & (baseH+1), same address-corrupt */
 static void op_9F(struct cpu *c)
 {
-    uint16_t ea = ea_abs_y_rw(c);
-    w8(c, ea, (uint8_t)(c->a & c->x & (uint8_t)((ea >> 8) + 1)));
+    uint8_t lo = r8(c, c->pc++);
+    uint8_t hi = r8(c, c->pc++);
+    uint8_t eff_lo = (uint8_t)(lo + c->y);
+    int cross = ((int)lo + (int)c->y) > 0xFF;
+    uint8_t value = (uint8_t)(c->a & c->x & (uint8_t)(hi + 1));
+    uint8_t addr_hi = cross ? value : hi;
+    r8(c, (uint16_t)(((uint16_t)hi << 8) | eff_lo));
+    w8(c, (uint16_t)(((uint16_t)addr_hi << 8) | eff_lo), value);
 }
 
 /* A0: LDY #imm */

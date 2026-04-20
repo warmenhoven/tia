@@ -205,9 +205,11 @@ static int run_case(uint8_t op, int case_index, struct reader *r)
             c.x  != fin_x  || c.y != fin_y || c.p != fin_p) {
             fprintf(stderr,
                 "op=0x%02X case=%d regs: "
+                "init PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X; "
                 "expected PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X, "
                 "got PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X\n",
                 op, case_index,
+                init_pc, init_a, init_x, init_y, init_s, init_p,
                 fin_pc, fin_a, fin_x, fin_y, fin_s, fin_p,
                 c.pc,   c.a,   c.x,   c.y,   c.s,   c.p);
             return 1;
@@ -231,8 +233,10 @@ static int run_case(uint8_t op, int case_index, struct reader *r)
                 fb.log[i].rw   != exp[i].rw) {
                 fprintf(stderr,
                     "op=0x%02X case=%d cycle %d: "
+                    "init A=%02X X=%02X Y=%02X P=%02X; "
                     "expected (%04X, %02X, %s), got (%04X, %02X, %s)\n",
                     op, case_index, i,
+                    init_a, init_x, init_y, init_p,
                     exp[i].addr, exp[i].val, exp[i].rw ? "W" : "R",
                     fb.log[i].addr, fb.log[i].val,
                     fb.log[i].rw ? "W" : "R");
