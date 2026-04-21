@@ -59,6 +59,27 @@ static int test_secam_palette_has_8_unique_colors(void)
     return 0;
 }
 
+/* --- Palette variant (standard vs z26) --- */
+
+static int test_palette_variant_swaps_tables(void)
+{
+    struct tia t;
+    tia_init(&t);
+    /* Default is standard. */
+    ASSERT_TRUE(t.palette == tia_ntsc_palette);
+    tia_set_palette_variant(&t, TIA_PALETTE_Z26);
+    ASSERT_TRUE(t.palette == tia_ntsc_palette_z26);
+    /* Region change carries the variant along. */
+    tia_set_region(&t, TIA_REGION_PAL);
+    ASSERT_TRUE(t.palette == tia_pal_palette_z26);
+    tia_set_region(&t, TIA_REGION_SECAM);
+    ASSERT_TRUE(t.palette == tia_secam_palette_z26);
+    /* And flipping back to standard re-selects the standard table. */
+    tia_set_palette_variant(&t, TIA_PALETTE_STANDARD);
+    ASSERT_TRUE(t.palette == tia_secam_palette);
+    return 0;
+}
+
 /* --- Auto-detect classifier --- */
 
 static int test_detect_ntsc_on_262_line_frames(void)
@@ -139,6 +160,7 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_set_region_swaps_palette);
     RUN_TEST(test_pal60_uses_pal_palette);
     RUN_TEST(test_secam_palette_has_8_unique_colors);
+    RUN_TEST(test_palette_variant_swaps_tables);
     RUN_TEST(test_detect_ntsc_on_262_line_frames);
     RUN_TEST(test_detect_pal_on_312_line_frames);
     RUN_TEST(test_detect_majority_wins);

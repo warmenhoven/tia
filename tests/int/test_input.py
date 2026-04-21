@@ -142,15 +142,16 @@ def _build_swchb_echo_rom() -> bytearray:
 def test_console_switches_toggle_on_shoulder_buttons(core_path):
     """Per the common 2600 overlay, the left-difficulty latch is driven by
     L (set to A) and R (set to B) — an adjacent row-pair, upper/lower.
+    Default boot value is A; R press flips to B, L press flips back to A.
     Pressing once flips the latch; holding doesn't chatter it."""
     rom = _build_swchb_echo_rom()
     states = [
         libretro.JoypadState(),            # 0 boot
-        libretro.JoypadState(),            # 1 neutral -> default (Diff B/B + color)
-        libretro.JoypadState(l=True),      # 2 press L -> Left Diff A (bit 6 set)
-        libretro.JoypadState(l=True),      # 3 still held: no change
+        libretro.JoypadState(),            # 1 neutral -> default (Diff A/A + color)
+        libretro.JoypadState(r=True),      # 2 press R -> Left Diff B (bit 6 clear)
+        libretro.JoypadState(r=True),      # 3 still held: no change
         libretro.JoypadState(),            # 4 released
-        libretro.JoypadState(r=True),      # 5 press R -> Left Diff B (bit 6 clear)
+        libretro.JoypadState(l=True),      # 5 press L -> Left Diff A (bit 6 set)
     ]
     driver = libretro.IterableInputDriver(input_generator=iter(states))
     session = (libretro.SessionBuilder
@@ -172,18 +173,18 @@ def test_console_switches_toggle_on_shoulder_buttons(core_path):
         s.run()                                       # boot
         s.run()                                       # neutral
         neutral   = swchb_from_center(s.video.screenshot())
-        s.run()                                       # L pressed
-        l_pressed = swchb_from_center(s.video.screenshot())
-        s.run()                                       # still held
-        l_held    = swchb_from_center(s.video.screenshot())
-        s.run()                                       # released
-        l_released = swchb_from_center(s.video.screenshot())
         s.run()                                       # R pressed
         r_pressed = swchb_from_center(s.video.screenshot())
-    assert l_pressed != neutral,   "L press should flip left-diff latch to A"
-    assert l_held == l_pressed,    "holding L should not chatter the latch"
-    assert l_released == l_pressed, "releasing L should not flip back"
-    assert r_pressed == neutral,   "R press should restore left-diff to B"
+        s.run()                                       # still held
+        r_held    = swchb_from_center(s.video.screenshot())
+        s.run()                                       # released
+        r_released = swchb_from_center(s.video.screenshot())
+        s.run()                                       # L pressed
+        l_pressed = swchb_from_center(s.video.screenshot())
+    assert r_pressed != neutral,   "R press should flip left-diff latch to B"
+    assert r_held == r_pressed,    "holding R should not chatter the latch"
+    assert r_released == r_pressed, "releasing R should not flip back"
+    assert l_pressed == neutral,   "L press should restore left-diff to A"
 
 
 def _build_keypad_probe_rom() -> bytearray:

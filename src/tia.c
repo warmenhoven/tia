@@ -78,16 +78,95 @@ const uint32_t tia_secam_palette[128] = {
     0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF
 };
 
+/* ============================================================
+ *   z26-variant palettes. Alternate colour set originally from the
+ *   z26 emulator — closer to the canonical "TIA colour poster" and
+ *   preferred by some users. Same 16×8 layout, different hue/luma
+ *   interpretation than our default "standard" palette.
+ * ============================================================ */
+
+const uint32_t tia_ntsc_palette_z26[128] = {
+    0x000000, 0x505050, 0x646464, 0x787878, 0x8C8C8C, 0xA0A0A0, 0xB4B4B4, 0xC8C8C8,
+    0x445400, 0x586800, 0x6C7C00, 0x809000, 0x94A414, 0xA8B828, 0xBCCC3C, 0xD0E050,
+    0x673900, 0x7B4D00, 0x8F6100, 0xA37513, 0xB78927, 0xCB9D3B, 0xDFB14F, 0xF3C563,
+    0x7B2504, 0x8F3918, 0xA34D2C, 0xB76140, 0xCB7554, 0xDF8968, 0xF39D7C, 0xFFB190,
+    0x7D122C, 0x912640, 0xA53A54, 0xB94E68, 0xCD627C, 0xE17690, 0xF58AA4, 0xFF9EB8,
+    0x730871, 0x871C85, 0x9B3099, 0xAF44AD, 0xC358C1, 0xD76CD5, 0xEB80E9, 0xFF94FD,
+    0x5D0B92, 0x711FA6, 0x8533BA, 0x9947CE, 0xAD5BE2, 0xC16FF6, 0xD583FF, 0xE997FF,
+    0x401599, 0x5429AD, 0x683DC1, 0x7C51D5, 0x9065E9, 0xA479FD, 0xB88DFF, 0xCCA1FF,
+    0x252593, 0x3939A7, 0x4D4DBB, 0x6161CF, 0x7575E3, 0x8989F7, 0x9D9DFF, 0xB1B1FF,
+    0x0F3480, 0x234894, 0x375CA8, 0x4B70BC, 0x5F84D0, 0x7398E4, 0x87ACF8, 0x9BC0FF,
+    0x04425A, 0x18566E, 0x2C6A82, 0x407E96, 0x5492AA, 0x68A6BE, 0x7CBAD2, 0x90CEE6,
+    0x044F30, 0x186344, 0x2C7758, 0x408B6C, 0x549F80, 0x68B394, 0x7CC7A8, 0x90DBBC,
+    0x0F550A, 0x23691E, 0x377D32, 0x4B9146, 0x5FA55A, 0x73B96E, 0x87CD82, 0x9BE196,
+    0x1F5100, 0x336505, 0x477919, 0x5B8D2D, 0x6FA141, 0x83B555, 0x97C969, 0xABDD7D,
+    0x344600, 0x485A00, 0x5C6E14, 0x708228, 0x84963C, 0x98AA50, 0xACBE64, 0xC0D278,
+    0x463E00, 0x5A5205, 0x6E6619, 0x827A2D, 0x968E41, 0xAAA255, 0xBEB669, 0xD2CA7D
+};
+
+const uint32_t tia_pal_palette_z26[128] = {
+    0x000000, 0x4C4C4C, 0x606060, 0x747474, 0x888888, 0x9C9C9C, 0xB0B0B0, 0xC4C4C4,
+    0x000000, 0x4C4C4C, 0x606060, 0x747474, 0x888888, 0x9C9C9C, 0xB0B0B0, 0xC4C4C4,
+    0x533A00, 0x674E00, 0x7B6203, 0x8F7617, 0xA38A2B, 0xB79E3F, 0xCBB253, 0xDFC667,
+    0x1B5800, 0x2F6C00, 0x438001, 0x579415, 0x6BA829, 0x7FBC3D, 0x93D051, 0xA7E465,
+    0x6A2900, 0x7E3D12, 0x925126, 0xA6653A, 0xBA794E, 0xCE8D62, 0xE2A176, 0xF6B58A,
+    0x075B00, 0x1B6F11, 0x2F8325, 0x439739, 0x57AB4D, 0x6BBF61, 0x7FD375, 0x93E789,
+    0x741B2F, 0x882F43, 0x9C4357, 0xB0576B, 0xC46B7F, 0xD87F93, 0xEC93A7, 0xFFA7BB,
+    0x00572E, 0x106B42, 0x247F56, 0x38936A, 0x4CA77E, 0x60BB92, 0x74CFA6, 0x88E3BA,
+    0x6D165F, 0x812A73, 0x953E87, 0xA9529B, 0xBD66AF, 0xD17AC3, 0xE58ED7, 0xF9A2EB,
+    0x014C5E, 0x156072, 0x297486, 0x3D889A, 0x519CAE, 0x65B0C2, 0x79C4D6, 0x8DD8EA,
+    0x5F1588, 0x73299C, 0x873DB0, 0x9B51C4, 0xAF65D8, 0xC379EC, 0xD78DFF, 0xEBA1FF,
+    0x123B87, 0x264F9B, 0x3A63AF, 0x4E77C3, 0x628BD7, 0x769FEB, 0x8AB3FF, 0x9EC7FF,
+    0x451E9D, 0x5932B1, 0x6D46C5, 0x815AD9, 0x956EED, 0xA982FF, 0xBD96FF, 0xD1AAFF,
+    0x2A2B9E, 0x3E3FB2, 0x5253C6, 0x6667DA, 0x7A7BEE, 0x8E8FFF, 0xA2A3FF, 0xB6B7FF,
+    0x000000, 0x4C4C4C, 0x606060, 0x747474, 0x888888, 0x9C9C9C, 0xB0B0B0, 0xC4C4C4,
+    0x000000, 0x4C4C4C, 0x606060, 0x747474, 0x888888, 0x9C9C9C, 0xB0B0B0, 0xC4C4C4
+};
+
+/* SECAM z26 differs from standard only in one entry (hue 3 / luma 3 in the
+ * 8-colour set: 0xFF3CFF vs 0xFF50FF). Replicated across all 16 hue rows. */
+const uint32_t tia_secam_palette_z26[128] = {
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF3CFF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF
+};
+
 void tia_set_region(struct tia *t, enum tia_region r)
 {
+    int z26 = (t->palette_variant == TIA_PALETTE_Z26);
     t->region = r;
     switch (r) {
-    case TIA_REGION_PAL:   t->palette = tia_pal_palette;   break;
-    case TIA_REGION_PAL60: t->palette = tia_pal_palette;   break;
-    case TIA_REGION_SECAM: t->palette = tia_secam_palette; break;
+    case TIA_REGION_PAL:
+    case TIA_REGION_PAL60:
+        t->palette = z26 ? tia_pal_palette_z26 : tia_pal_palette;
+        break;
+    case TIA_REGION_SECAM:
+        t->palette = z26 ? tia_secam_palette_z26 : tia_secam_palette;
+        break;
     case TIA_REGION_NTSC:
-    default:               t->palette = tia_ntsc_palette;  break;
+    default:
+        t->palette = z26 ? tia_ntsc_palette_z26 : tia_ntsc_palette;
+        break;
     }
+}
+
+void tia_set_palette_variant(struct tia *t, enum tia_palette_variant v)
+{
+    t->palette_variant = v;
+    tia_set_region(t, t->region);   /* re-select the active table */
 }
 
 /* ============================================================
@@ -805,15 +884,16 @@ void tia_serialize(const struct tia *t, void *buf)
         *q++ = (uint8_t)(t->audio_sum_ct);
         *q++ = (uint8_t)(t->audio_sum_ct >> 8);
         /* Sample queue is transient; don't serialize. */
-        /* 26 bytes total: 7*2 + 6 + 6 tail = 20 used, 2 region, 4 reserved.
-         * Region survives save/load; detect_samples/count do not (if the
-         * save pre-dates the detect lock, detection re-runs over the next
-         * ~5 VSYNCs). Older save files have these bytes as 0, which maps
-         * to NTSC / unlocked — a safe default. */
+        /* 26 bytes total: 7*2 + 6 + 6 tail = 20 used, 3 region/palette, 3 reserved.
+         * Region and palette variant survive save/load; detect_samples/count do
+         * not (if the save pre-dates the detect lock, detection re-runs over
+         * the next ~5 VSYNCs). Older save files have these bytes as 0, which
+         * maps to NTSC / standard-palette / unlocked — all safe defaults. */
         *q++ = (uint8_t)t->region;
         *q++ = (uint8_t)(((uint8_t)t->detected_region & 0x03) |
                          (t->detect_locked ? 0x80 : 0));
-        *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0;
+        *q++ = (uint8_t)t->palette_variant;
+        *q++ = 0; *q++ = 0; *q++ = 0;
         /* Input (7 bytes): inpt[0..5] + ground flag. */
         {
             int i;
@@ -906,11 +986,14 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
         t->audio_sum[0] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum[1] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum_ct = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
-        /* Region byte pair (see serialize for layout). Re-syncs palette. */
+        /* Region + palette-variant bytes (see serialize for layout).
+         * Palette variant must be set before tia_set_region so the latter
+         * picks the correct table. */
+        t->palette_variant  = (enum tia_palette_variant)(q[2] & 0x01);
         tia_set_region(t, (enum tia_region)(q[0] & 0x03));
-        t->detected_region = (enum tia_region)(q[1] & 0x03);
-        t->detect_locked   = (q[1] & 0x80) != 0;
-        t->detect_count    = t->detect_locked ? TIA_DETECT_FRAMES : 0;
+        t->detected_region  = (enum tia_region)(q[1] & 0x03);
+        t->detect_locked    = (q[1] & 0x80) != 0;
+        t->detect_count     = t->detect_locked ? TIA_DETECT_FRAMES : 0;
         memset(t->detect_samples, 0, sizeof(t->detect_samples));
     }
     /* Input: 7 bytes inpt state + 16 bytes paddle state. Located at offset 78. */

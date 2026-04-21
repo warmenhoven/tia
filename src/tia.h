@@ -26,11 +26,21 @@ enum tia_region {
  * ~50-line gap (NTSC ~262, PAL ~312) so no median needed. */
 #define TIA_DETECT_FRAMES 5
 
+/* Palette variant. Both standard and z26 cover NTSC / PAL / SECAM.
+ * "standard" is our default colour set; "z26" is an alternate set from
+ * the z26 emulator, closer to the classic "TIA colour poster" and
+ * preferred by some users. */
+enum tia_palette_variant {
+    TIA_PALETTE_STANDARD = 0,
+    TIA_PALETTE_Z26      = 1
+};
+
 struct tia {
     /* Framebuffer (max size fits NTSC or PAL). Libretro reads this. */
     uint32_t fb[TIA_VISIBLE_WIDTH * TIA_MAX_SCANLINES];
     const uint32_t *palette;       /* pointer to active 128-entry palette */
     enum tia_region region;        /* currently selected region */
+    enum tia_palette_variant palette_variant;
 
     /* Beam position */
     uint16_t hpos;                 /* 0..227 */
@@ -166,10 +176,18 @@ struct tia {
 extern const uint32_t tia_ntsc_palette[128];
 extern const uint32_t tia_pal_palette[128];
 extern const uint32_t tia_secam_palette[128];
+extern const uint32_t tia_ntsc_palette_z26[128];
+extern const uint32_t tia_pal_palette_z26[128];
+extern const uint32_t tia_secam_palette_z26[128];
 
-/* Swap palette to match `r`. Does not change timing / fps (the libretro
- * layer handles that via retro_get_system_av_info / SET_SYSTEM_AV_INFO). */
+/* Swap palette to match `r` (uses the currently-selected palette variant).
+ * Does not change timing / fps (the libretro layer handles that via
+ * retro_get_system_av_info / SET_SYSTEM_AV_INFO). */
 void tia_set_region(struct tia *t, enum tia_region r);
+
+/* Change the palette variant and re-select the active palette for the
+ * current region. */
+void tia_set_palette_variant(struct tia *t, enum tia_palette_variant v);
 
 void tia_init(struct tia *t);
 void tia_reset(struct tia *t);

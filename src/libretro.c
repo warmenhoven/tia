@@ -33,6 +33,7 @@
 #define FRAME_HEIGHT_PAL  274
 #define TOP_PAD_NTSC 18
 #define TOP_PAD_PAL   1
+#define HOVERSCAN_TRIM 8        /* pixels cropped from each side when enabled */
 /* Fallback anchor used before the game has performed a VBLANK transition
  * (cold boot / a few frames of boot where visible_start is still the
  * 0xFFFF sentinel). */
@@ -82,7 +83,7 @@ static struct {
      * side of a physical toggle: L sets left-diff A, L2 sets left-diff
      * B, and so on. Initial values match common factory defaults. */
     bool        sw_color;        /* true = color, false = B&W */
-    bool        sw_left_diff_a;  /* true = A (amateur), false = B (pro) */
+    bool        sw_left_diff_a;  /* true = A, false = B */
     bool        sw_right_diff_a;
     /* Previous-frame button state for edge detection on the six
      * switch-setting buttons (one bit per JOYPAD_L..R3). */
@@ -102,6 +103,21 @@ static struct {
      * (after detection locks) or once per option change. */
     int         region_setting;       /* -1 = auto, else enum tia_region */
     enum tia_region active_region;
+
+    /* Overscan crop. hoverscan trims 8 pixels off each side; voverscan
+     * trims N rows off top AND bottom. Geometry changes push new AV
+     * info to the frontend. */
+    bool        crop_hoverscan;
+    uint8_t     crop_voverscan;       /* 0..24, always even */
+
+    /* Paddle tuning (applied when a port is in DEV_PADDLE mode).
+     * `paddle_sensitivity` 1..10 scales the analog-stick axis before the
+     * charge-time map; 5 is neutral (no scale). Higher = reaches full
+     * paddle sweep with less stick movement. `paddle_deadzone_pct` 0..30
+     * is a dead zone at the centre of the stick, below which the axis
+     * is treated as exactly centred. */
+    uint8_t     paddle_sensitivity;
+    uint8_t     paddle_deadzone_pct;
 } sys;
 
 /* Nominal fps / audio rate per region. Real-hardware rates are irrational
@@ -151,10 +167,8 @@ static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
-/* Core options. Currently just "tia_region"; more will land here as the
- * options framework expands (palette, phosphor, etc.). Using v2 layout so
- * the frontend can show a description; for older frontends we fall back
- * to the legacy SET_VARIABLES path with the same key/values. */
+/* Core options. Using v2 layout so the frontend can show descriptions;
+ * for older frontends we fall back to the legacy SET_VARIABLES path. */
 static const struct retro_core_option_v2_definition core_options_v2[] = {
     {
         "tia_region", "Region", NULL,
@@ -172,14 +186,126 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
         },
         "auto"
     },
+    {
+        "tia_palette", "Palette", NULL,
+        "Colour palette variant. \"standard\" is the default colour set "
+        "we ship; \"z26\" is an alternate set originally from the z26 "
+        "emulator, closer to the classic TIA colour poster and preferred "
+        "by some users.",
+        NULL, NULL,
+        {
+            { "standard", "Standard" },
+            { "z26",      "z26"      },
+            { NULL, NULL }
+        },
+        "standard"
+    },
+    {
+        "tia_left_diff", "Left Difficulty (initial)", NULL,
+        "Starting position for the left difficulty switch. Runtime "
+        "toggles (L/L2 shoulder buttons) still work on top.",
+        NULL, NULL,
+        {
+            { "a", "A" },
+            { "b", "B" },
+            { NULL, NULL }
+        },
+        "a"
+    },
+    {
+        "tia_right_diff", "Right Difficulty (initial)", NULL,
+        "Starting position for the right difficulty switch. See "
+        "\"Left Difficulty\" — same semantics for the right switch.",
+        NULL, NULL,
+        {
+            { "a", "A" },
+            { "b", "B" },
+            { NULL, NULL }
+        },
+        "a"
+    },
+    {
+        "tia_color", "TV Type (initial)", NULL,
+        "Starting position for the colour / black-and-white TV type "
+        "switch. Runtime toggles (L3/R3) still work on top.",
+        NULL, NULL,
+        {
+            { "color", "Color" },
+            { "bw",    "Black & White" },
+            { NULL, NULL }
+        },
+        "color"
+    },
+    {
+        "tia_crop_hoverscan", "Crop horizontal overscan", NULL,
+        "Trim 8 pixels from each side of the visible area, removing the "
+        "leftmost and rightmost columns most 2600 games don't draw into. "
+        "Produces a tighter 144×H output.",
+        NULL, NULL,
+        {
+            { "off", "Off" },
+            { "on",  "On" },
+            { NULL, NULL }
+        },
+        "off"
+    },
+    {
+        "tia_crop_voverscan", "Crop vertical overscan (rows)", NULL,
+        "Trim N rows off the top and N rows off the bottom of the output "
+        "frame, removing VBLANK padding that games don't render into.",
+        NULL, NULL,
+        {
+            { "0",  "0" },  { "2",  "2" },  { "4",  "4" },  { "6",  "6" },
+            { "8",  "8" },  { "10", "10" }, { "12", "12" }, { "14", "14" },
+            { "16", "16" }, { "18", "18" }, { "20", "20" }, { "22", "22" },
+            { "24", "24" },
+            { NULL, NULL }
+        },
+        "0"
+    },
+    {
+        "tia_paddle_sensitivity", "Paddle sensitivity", NULL,
+        "Analog-stick gain for paddle controllers. 5 is neutral; higher "
+        "values reach full paddle sweep with less stick travel.",
+        NULL, NULL,
+        {
+            { "1", "1" }, { "2", "2" }, { "3", "3" }, { "4", "4" },
+            { "5", "5 (default)" },
+            { "6", "6" }, { "7", "7" }, { "8", "8" }, { "9", "9" },
+            { "10", "10" },
+            { NULL, NULL }
+        },
+        "5"
+    },
+    {
+        "tia_paddle_deadzone", "Paddle deadzone (%)", NULL,
+        "Analog-stick deadzone for paddle controllers. Values near the "
+        "stick centre within this percentage are treated as exactly "
+        "centred; useful for sticks that don't self-centre perfectly.",
+        NULL, NULL,
+        {
+            { "0", "0% (off)" }, { "5", "5%" },  { "10", "10%" },
+            { "15", "15%" }, { "20", "20%" }, { "25", "25%" }, { "30", "30%" },
+            { NULL, NULL }
+        },
+        "0"
+    },
     { NULL, NULL, NULL, NULL, NULL, NULL, {{0}}, NULL }
 };
 static const struct retro_core_options_v2 core_options_v2_struct = {
     NULL, (struct retro_core_option_v2_definition *)core_options_v2
 };
-/* Legacy fallback — same key + value list, flat format. */
+/* Legacy fallback — same keys + value lists, flat format. */
 static const struct retro_variable core_options_v0[] = {
-    { "tia_region", "Region; auto|ntsc|pal|pal60|secam" },
+    { "tia_region",     "Region; auto|ntsc|pal|pal60|secam" },
+    { "tia_palette",    "Palette; standard|z26" },
+    { "tia_left_diff",       "Left Difficulty (initial); a|b" },
+    { "tia_right_diff",      "Right Difficulty (initial); a|b" },
+    { "tia_color",           "TV Type (initial); color|bw" },
+    { "tia_crop_hoverscan",  "Crop horizontal overscan; off|on" },
+    { "tia_crop_voverscan",  "Crop vertical overscan (rows); 0|2|4|6|8|10|12|14|16|18|20|22|24" },
+    { "tia_paddle_sensitivity", "Paddle sensitivity; 1|2|3|4|5|6|7|8|9|10" },
+    { "tia_paddle_deadzone",    "Paddle deadzone (%); 0|5|10|15|20|25|30" },
     { NULL, NULL }
 };
 
@@ -261,6 +387,105 @@ static bool apply_region_option(void)
     return false;
 }
 
+/* Parse the "tia_palette" core option and apply it. Palette changes don't
+ * affect timing, so no AV-info refresh is needed. */
+static void apply_palette_option(void)
+{
+    struct retro_variable var;
+    enum tia_palette_variant v = TIA_PALETTE_STANDARD;
+    var.key = "tia_palette";
+    var.value = NULL;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+        var.value && !strcmp(var.value, "z26"))
+        v = TIA_PALETTE_Z26;
+    if (sys.loaded) tia_set_palette_variant(&sys.tia, v);
+    else            sys.tia.palette_variant = v;
+}
+
+/* Read a string option. Returns true if the value is exactly `true_val`,
+ * false if unset or anything else. */
+static bool get_bool_option(const char *key, const char *true_val)
+{
+    struct retro_variable var;
+    var.key = key;
+    var.value = NULL;
+    if (!environ_cb || !environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) ||
+        !var.value)
+        return false;
+    return strcmp(var.value, true_val) == 0;
+}
+
+/* Parse the paddle tuning options and apply them. No AV refresh needed. */
+static void apply_paddle_options(void)
+{
+    struct retro_variable var;
+    int n;
+
+    var.key = "tia_paddle_sensitivity";
+    var.value = NULL;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+        var.value) {
+        n = atoi(var.value);
+        if (n < 1) n = 1;
+        if (n > 10) n = 10;
+        sys.paddle_sensitivity = (uint8_t)n;
+    }
+
+    var.key = "tia_paddle_deadzone";
+    var.value = NULL;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+        var.value) {
+        n = atoi(var.value);
+        if (n < 0) n = 0;
+        if (n > 30) n = 30;
+        sys.paddle_deadzone_pct = (uint8_t)n;
+    }
+}
+
+/* Parse the two crop options and apply them. Returns true if either
+ * changed (caller pushes new AV info so the frontend picks up the new
+ * base width/height). */
+static bool apply_crop_options(void)
+{
+    struct retro_variable var;
+    bool new_hover = sys.crop_hoverscan;
+    uint8_t new_vover = sys.crop_voverscan;
+
+    var.key = "tia_crop_hoverscan";
+    var.value = NULL;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+        var.value)
+        new_hover = !strcmp(var.value, "on");
+
+    var.key = "tia_crop_voverscan";
+    var.value = NULL;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+        var.value) {
+        int n = atoi(var.value);
+        if (n < 0) n = 0;
+        if (n > 24) n = 24;
+        new_vover = (uint8_t)n;
+    }
+
+    if (new_hover != sys.crop_hoverscan || new_vover != sys.crop_voverscan) {
+        sys.crop_hoverscan = new_hover;
+        sys.crop_voverscan = new_vover;
+        return true;
+    }
+    return false;
+}
+
+/* Apply the difficulty + color-switch initial-position options. Called
+ * at load time and on retro_reset; runtime button toggles continue to
+ * work on top. Defaults (when the frontend doesn't provide values) are
+ * A / A / Color — matching the common 2600 retropad overlay convention. */
+static void apply_switch_initial_options(void)
+{
+    sys.sw_left_diff_a  = !get_bool_option("tia_left_diff",  "b");
+    sys.sw_right_diff_a = !get_bool_option("tia_right_diff", "b");
+    sys.sw_color        = !get_bool_option("tia_color",      "bw");
+}
+
 void retro_set_video_refresh(retro_video_refresh_t cb)       { video_cb = cb; }
 void retro_set_audio_sample(retro_audio_sample_t cb)         { audio_cb = cb; }
 void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
@@ -273,14 +498,18 @@ void retro_init(void)
     sys.port_device[0] = DEV_JOYPAD;
     sys.port_device[1] = DEV_JOYPAD;
     /* Factory defaults for the console toggles: Color on, both
-     * difficulty switches B (pro). Players flip them with L/L2/L3/R/R2/R3. */
+     * difficulty switches A (matches the common 2600 retropad overlay).
+     * Players flip them with L/L2/L3/R/R2/R3. */
     sys.sw_color        = true;
-    sys.sw_left_diff_a  = false;
-    sys.sw_right_diff_a = false;
+    sys.sw_left_diff_a  = true;
+    sys.sw_right_diff_a = true;
     /* Default to auto-detect region; pre-detect we show NTSC timing so the
      * frontend has sensible AV info before the first frame completes. */
     sys.region_setting = -1;
     sys.active_region  = TIA_REGION_NTSC;
+    /* Paddle tuning defaults: neutral sensitivity (5), no deadzone. */
+    sys.paddle_sensitivity = 5;
+    sys.paddle_deadzone_pct = 0;
 }
 void retro_deinit(void) { }
 
@@ -296,9 +525,13 @@ void retro_get_system_info(struct retro_system_info *info)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
+    uint16_t w = FRAME_WIDTH;
+    uint16_t h = region_frame_height(sys.active_region);
+    if (sys.crop_hoverscan) w -= 2u * HOVERSCAN_TRIM;
+    if (sys.crop_voverscan) h -= (uint16_t)(2u * sys.crop_voverscan);
     memset(info, 0, sizeof(*info));
-    info->geometry.base_width   = FRAME_WIDTH;
-    info->geometry.base_height  = region_frame_height(sys.active_region);
+    info->geometry.base_width   = w;
+    info->geometry.base_height  = h;
     info->geometry.max_width    = FRAME_WIDTH;
     info->geometry.max_height   = TIA_MAX_SCANLINES;
     info->geometry.aspect_ratio = 4.0f / 3.0f;
@@ -314,6 +547,13 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 void retro_reset(void)
 {
     if (!sys.loaded) return;
+    /* Reset the console-switch latches to factory defaults, then re-apply
+     * the initial-position core options so a user who picked "B" for a
+     * difficulty sees it honoured after every reset. */
+    sys.sw_color        = true;
+    sys.sw_left_diff_a  = true;
+    sys.sw_right_diff_a = true;
+    apply_switch_initial_options();
     tia_reset(&sys.tia);
     riot_reset(&sys.riot);
     cpu_reset(&sys.cpu);
@@ -362,11 +602,27 @@ static uint8_t pa_bits_paddle(uint8_t pa, unsigned port)
 /* Convert a libretro analog axis [-32768, 32767] to a paddle charge-target
  * in TIA color clocks. 0 resistance (fully left) yields a 0-clock charge
  * (bit 7 flips high immediately). Max resistance (fully right) takes
- * PADDLE_CHARGE_MAX_CLOCKS clocks. */
+ * PADDLE_CHARGE_MAX_CLOCKS clocks.
+ *
+ * Applies the two user-configurable tuning options:
+ *   paddle_deadzone_pct — snap near-centre values to 0 (eliminates jitter
+ *       from analog sticks that don't self-centre perfectly).
+ *   paddle_sensitivity — linear gain on the axis (5 = 1×; 10 = 2×).
+ *       Higher values reach full paddle sweep with less stick travel. */
 static uint16_t paddle_charge_from_axis(int16_t axis)
 {
-    int v = axis + 32768;                  /* 0..65535 */
-    unsigned long scaled = (unsigned long)v * PADDLE_CHARGE_MAX_CLOCKS / 65536ul;
+    int a = axis;
+    int dz, v;
+    unsigned long scaled;
+    /* Apply deadzone first (on the pre-scale axis). */
+    dz = (int)sys.paddle_deadzone_pct * 32768 / 100;
+    if (a > -dz && a < dz) a = 0;
+    /* Apply sensitivity. 5 is neutral. */
+    a = a * (int)sys.paddle_sensitivity / 5;
+    if (a >  32767) a =  32767;
+    if (a < -32768) a = -32768;
+    v = a + 32768;                  /* 0..65535 */
+    scaled = (unsigned long)v * PADDLE_CHARGE_MAX_CLOCKS / 65536ul;
     if (scaled > 0xFFFF) scaled = 0xFFFF;
     return (uint16_t)scaled;
 }
@@ -606,8 +862,8 @@ static void poll_inputs(void)
      *   bit 2: unused, reads as 1
      *   bit 3: Color/B&W           (1 = Color)
      *   bits 4-5: unused, read as 1
-     *   bit 6: Left Difficulty     (1 = A / amateur)
-     *   bit 7: Right Difficulty    (1 = A / amateur)
+     *   bit 6: Left Difficulty     (1 = A)
+     *   bit 7: Right Difficulty    (1 = A)
      *
      * The three toggle switches are state machines driven by button edges.
      * Button → switch assignment follows the common 2600 touchscreen overlay
@@ -742,7 +998,12 @@ void retro_run(void)
     /* Pick up option changes the user made mid-run. */
     if (environ_cb &&
         environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &update) && update) {
-        if (apply_region_option()) push_av_info();
+        bool geom_changed = false;
+        if (apply_region_option()) geom_changed = true;
+        if (apply_crop_options())  geom_changed = true;
+        if (geom_changed) push_av_info();
+        apply_palette_option();
+        apply_paddle_options();
     }
     /* If we're in auto mode and detection just locked this frame, apply. */
     if (sys.region_setting < 0 && sys.tia.detect_locked &&
@@ -774,10 +1035,24 @@ void retro_run(void)
                          : SHIP_OFFSET_FALLBACK;
         uint16_t offset  = (anchor > top_pad) ? (uint16_t)(anchor - top_pad) : 0;
         uint16_t height  = region_frame_height(sys.active_region);
+        uint16_t width   = FRAME_WIDTH;
+        uint16_t x_off   = 0;
         if (offset + height > TIA_MAX_SCANLINES)
             height = (uint16_t)(TIA_MAX_SCANLINES - offset);
-        video_cb(sys.tia.fb + (size_t)offset * FRAME_WIDTH,
-                 FRAME_WIDTH, height,
+        /* Apply user-configured overscan crop. hoverscan shifts the row
+         * pointer right by HOVERSCAN_TRIM pixels and narrows width;
+         * voverscan shifts offset down by N rows and shortens height by 2N. */
+        if (sys.crop_hoverscan) {
+            x_off = HOVERSCAN_TRIM;
+            width = (uint16_t)(FRAME_WIDTH - 2u * HOVERSCAN_TRIM);
+        }
+        if (sys.crop_voverscan) {
+            uint16_t v = sys.crop_voverscan;
+            offset = (uint16_t)(offset + v);
+            height = (uint16_t)(height - 2u * v);
+        }
+        video_cb(sys.tia.fb + (size_t)offset * FRAME_WIDTH + x_off,
+                 width, height,
                  FRAME_WIDTH * sizeof(uint32_t));
     }
 
@@ -841,11 +1116,16 @@ bool retro_load_game(const struct retro_game_info *info)
     }
 
     tia_init(&sys.tia);
-    /* Apply region option before the CPU starts: if the user forced a
-     * region, auto-detect never runs and the correct palette is in place
-     * from cold boot. Auto mode leaves active_region as NTSC until the
-     * detector locks a few frames in. */
+    /* Apply region + palette options before the CPU starts: if the user
+     * forced a region, auto-detect never runs and the correct palette is
+     * in place from cold boot. Auto mode leaves active_region as NTSC
+     * until the detector locks a few frames in. Palette variant must be
+     * set first so the region switch picks the right table. */
+    apply_palette_option();
     apply_region_option();
+    apply_crop_options();
+    apply_switch_initial_options();
+    apply_paddle_options();
     tia_set_region(&sys.tia, sys.active_region);
     riot_init(&sys.riot);
     sys.riot.pa_changed     = keypad_update;
