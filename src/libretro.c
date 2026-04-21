@@ -210,7 +210,7 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
             { "b", "B" },
             { NULL, NULL }
         },
-        "a"
+        "b"
     },
     {
         "tia_right_diff", "Right Difficulty (initial)", NULL,
@@ -222,7 +222,7 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
             { "b", "B" },
             { NULL, NULL }
         },
-        "a"
+        "b"
     },
     {
         "tia_color", "TV Type (initial)", NULL,
@@ -299,8 +299,8 @@ static const struct retro_core_options_v2 core_options_v2_struct = {
 static const struct retro_variable core_options_v0[] = {
     { "tia_region",     "Region; auto|ntsc|pal|pal60|secam" },
     { "tia_palette",    "Palette; standard|z26" },
-    { "tia_left_diff",       "Left Difficulty (initial); a|b" },
-    { "tia_right_diff",      "Right Difficulty (initial); a|b" },
+    { "tia_left_diff",       "Left Difficulty (initial); b|a" },
+    { "tia_right_diff",      "Right Difficulty (initial); b|a" },
     { "tia_color",           "TV Type (initial); color|bw" },
     { "tia_crop_hoverscan",  "Crop horizontal overscan; off|on" },
     { "tia_crop_voverscan",  "Crop vertical overscan (rows); 0|2|4|6|8|10|12|14|16|18|20|22|24" },
@@ -478,12 +478,12 @@ static bool apply_crop_options(void)
 /* Apply the difficulty + color-switch initial-position options. Called
  * at load time and on retro_reset; runtime button toggles continue to
  * work on top. Defaults (when the frontend doesn't provide values) are
- * A / A / Color — matching the common 2600 retropad overlay convention. */
+ * B / B / Color. */
 static void apply_switch_initial_options(void)
 {
-    sys.sw_left_diff_a  = !get_bool_option("tia_left_diff",  "b");
-    sys.sw_right_diff_a = !get_bool_option("tia_right_diff", "b");
-    sys.sw_color        = !get_bool_option("tia_color",      "bw");
+    sys.sw_left_diff_a  = get_bool_option("tia_left_diff",  "a");
+    sys.sw_right_diff_a = get_bool_option("tia_right_diff", "a");
+    sys.sw_color        = !get_bool_option("tia_color",     "bw");
 }
 
 void retro_set_video_refresh(retro_video_refresh_t cb)       { video_cb = cb; }
@@ -498,11 +498,10 @@ void retro_init(void)
     sys.port_device[0] = DEV_JOYPAD;
     sys.port_device[1] = DEV_JOYPAD;
     /* Factory defaults for the console toggles: Color on, both
-     * difficulty switches A (matches the common 2600 retropad overlay).
-     * Players flip them with L/L2/L3/R/R2/R3. */
+     * difficulty switches B. Players flip them with L/L2/L3/R/R2/R3. */
     sys.sw_color        = true;
-    sys.sw_left_diff_a  = true;
-    sys.sw_right_diff_a = true;
+    sys.sw_left_diff_a  = false;
+    sys.sw_right_diff_a = false;
     /* Default to auto-detect region; pre-detect we show NTSC timing so the
      * frontend has sensible AV info before the first frame completes. */
     sys.region_setting = -1;
@@ -548,11 +547,11 @@ void retro_reset(void)
 {
     if (!sys.loaded) return;
     /* Reset the console-switch latches to factory defaults, then re-apply
-     * the initial-position core options so a user who picked "B" for a
+     * the initial-position core options so a user who picked "A" for a
      * difficulty sees it honoured after every reset. */
     sys.sw_color        = true;
-    sys.sw_left_diff_a  = true;
-    sys.sw_right_diff_a = true;
+    sys.sw_left_diff_a  = false;
+    sys.sw_right_diff_a = false;
     apply_switch_initial_options();
     tia_reset(&sys.tia);
     riot_reset(&sys.riot);

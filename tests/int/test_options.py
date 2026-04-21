@@ -85,12 +85,12 @@ def _swchb_bit_state(rom, options, n_frames=6):
         return _center(s.video.screenshot())
 
 
-def test_left_diff_default_is_a(core_path):
-    """No option set → sw_left_diff_a = true → SWCHB bit 6 set on boot."""
+def test_left_diff_a_overrides_default(core_path):
+    """Default is B; forcing A via the option should paint a different COLUBK."""
     rom = _build_swchb_echo_rom()
-    a = _swchb_bit_state(rom, {})
-    b = _swchb_bit_state(rom, {"tia_left_diff": "b"})
-    assert a != b, f"left-diff A default vs B override should paint different COLUBK, both got {a}"
+    default_b = _swchb_bit_state(rom, {})
+    forced_a  = _swchb_bit_state(rom, {"tia_left_diff": "a"})
+    assert default_b != forced_a, f"left-diff B default vs A override should paint different COLUBK, both got {default_b}"
 
 
 def test_right_diff_b_overrides_default(core_path):
