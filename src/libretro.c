@@ -24,8 +24,15 @@
  * by a scanline or two as VSYNC/VBLANK edges wobble), the same TIA scanline
  * would land at a different output Y each frame and stationary content would
  * appear to jitter vertically. The per-frame anchor (offset) still tracks
- * visible_start so games with different visible regions center correctly. */
-#define FRAME_HEIGHT_NOMINAL 228
+ * visible_start so games with different visible regions center correctly.
+ *
+ * Height and top-VBLANK pad are region-dependent: PAL's visible region is
+ * ~273 scanlines, which won't fit in the NTSC-sized 228 frame without
+ * truncation, so we ship a taller frame and use almost no top pad. */
+#define FRAME_HEIGHT_NTSC 228
+#define FRAME_HEIGHT_PAL  274
+#define TOP_PAD_NTSC 18
+#define TOP_PAD_PAL   1
 /* Fallback anchor used before the game has performed a VBLANK transition
  * (cold boot / a few frames of boot where visible_start is still the
  * 0xFFFF sentinel). */
@@ -86,7 +93,52 @@ static struct {
      * pressed. Updated by poll_inputs, consumed by keypad_update() on
      * every SWCHA/DDR change. */
     uint16_t    keypad_pressed[2];
+
+    /* Region handling. `region_setting` is -1 for auto-detect, or one of
+     * the TIA_REGION_* values when forced by the user. `active_region` is
+     * what's currently applied (resolves auto → detected). We notify the
+     * frontend via SET_SYSTEM_AV_INFO only when active_region changes, so
+     * fps/sample-rate renegotiation happens at most once per session
+     * (after detection locks) or once per option change. */
+    int         region_setting;       /* -1 = auto, else enum tia_region */
+    enum tia_region active_region;
 } sys;
+
+/* Nominal fps / audio rate per region. Real-hardware rates are irrational
+ * (NTSC colour clock / 4 / scanline, etc.); frontends resample so the
+ * exact value matters less than being close and stable. */
+static double region_fps(enum tia_region r)
+{
+    switch (r) {
+    case TIA_REGION_PAL:   return 50.0;
+    case TIA_REGION_SECAM: return 50.0;
+    case TIA_REGION_PAL60: return 60.0;
+    case TIA_REGION_NTSC:
+    default:               return 60.0;
+    }
+}
+static double region_sample_rate(enum tia_region r)
+{
+    /* TIA colour-clock / 114 per sample. NTSC 3.579545 MHz → 31400 Hz,
+     * PAL 3.546894 MHz → 31113 Hz (rounded to 31200). */
+    switch (r) {
+    case TIA_REGION_PAL:
+    case TIA_REGION_SECAM: return 31200.0;
+    case TIA_REGION_PAL60:
+    case TIA_REGION_NTSC:
+    default:               return 31400.0;
+    }
+}
+static uint16_t region_frame_height(enum tia_region r)
+{
+    return (r == TIA_REGION_PAL || r == TIA_REGION_SECAM)
+           ? FRAME_HEIGHT_PAL : FRAME_HEIGHT_NTSC;
+}
+static uint16_t region_top_pad(enum tia_region r)
+{
+    return (r == TIA_REGION_PAL || r == TIA_REGION_SECAM)
+           ? TOP_PAD_PAL : TOP_PAD_NTSC;
+}
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -98,6 +150,38 @@ static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 }
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
+
+/* Core options. Currently just "tia_region"; more will land here as the
+ * options framework expands (palette, phosphor, etc.). Using v2 layout so
+ * the frontend can show a description; for older frontends we fall back
+ * to the legacy SET_VARIABLES path with the same key/values. */
+static const struct retro_core_option_v2_definition core_options_v2[] = {
+    {
+        "tia_region", "Region", NULL,
+        "Console region. Selects palette, frame rate, and audio sample "
+        "rate. Auto detects NTSC vs PAL from the game's scanline count "
+        "over the first few frames.",
+        NULL, NULL,
+        {
+            { "auto",  "Auto" },
+            { "ntsc",  "NTSC" },
+            { "pal",   "PAL"  },
+            { "pal60", "PAL60" },
+            { "secam", "SECAM" },
+            { NULL, NULL }
+        },
+        "auto"
+    },
+    { NULL, NULL, NULL, NULL, NULL, NULL, {{0}}, NULL }
+};
+static const struct retro_core_options_v2 core_options_v2_struct = {
+    NULL, (struct retro_core_option_v2_definition *)core_options_v2
+};
+/* Legacy fallback — same key + value list, flat format. */
+static const struct retro_variable core_options_v0[] = {
+    { "tia_region", "Region; auto|ntsc|pal|pal60|secam" },
+    { NULL, NULL }
+};
 
 void retro_set_environment(retro_environment_t cb)
 {
@@ -128,6 +212,53 @@ void retro_set_environment(retro_environment_t cb)
         log_cb = fallback_log;
 
     cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void *)ports);
+
+    {
+        unsigned version = 0;
+        if (cb(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) &&
+            version >= 2) {
+            cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2,
+               (void *)&core_options_v2_struct);
+        } else {
+            cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)core_options_v0);
+        }
+    }
+}
+
+/* Parse the "tia_region" core option and apply it. Returns true if the
+ * active region changed (so the caller can push new AV info). */
+static bool apply_region_option(void)
+{
+    struct retro_variable var;
+    int new_setting = sys.region_setting;
+    enum tia_region new_active = sys.active_region;
+
+    var.key = "tia_region";
+    var.value = NULL;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+        var.value) {
+        if      (!strcmp(var.value, "ntsc"))  new_setting = TIA_REGION_NTSC;
+        else if (!strcmp(var.value, "pal"))   new_setting = TIA_REGION_PAL;
+        else if (!strcmp(var.value, "pal60")) new_setting = TIA_REGION_PAL60;
+        else if (!strcmp(var.value, "secam")) new_setting = TIA_REGION_SECAM;
+        else                                  new_setting = -1;  /* auto */
+    }
+
+    if (new_setting < 0) {
+        /* Auto: use whatever the TIA has detected (or NTSC pre-detect). */
+        new_active = sys.tia.detect_locked
+                   ? sys.tia.detected_region : TIA_REGION_NTSC;
+    } else {
+        new_active = (enum tia_region)new_setting;
+    }
+
+    sys.region_setting = new_setting;
+    if (new_active != sys.active_region) {
+        sys.active_region = new_active;
+        if (sys.loaded) tia_set_region(&sys.tia, new_active);
+        return true;
+    }
+    return false;
 }
 
 void retro_set_video_refresh(retro_video_refresh_t cb)       { video_cb = cb; }
@@ -146,6 +277,10 @@ void retro_init(void)
     sys.sw_color        = true;
     sys.sw_left_diff_a  = false;
     sys.sw_right_diff_a = false;
+    /* Default to auto-detect region; pre-detect we show NTSC timing so the
+     * frontend has sensible AV info before the first frame completes. */
+    sys.region_setting = -1;
+    sys.active_region  = TIA_REGION_NTSC;
 }
 void retro_deinit(void) { }
 
@@ -163,12 +298,12 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 {
     memset(info, 0, sizeof(*info));
     info->geometry.base_width   = FRAME_WIDTH;
-    info->geometry.base_height  = FRAME_HEIGHT_NOMINAL;
+    info->geometry.base_height  = region_frame_height(sys.active_region);
     info->geometry.max_width    = FRAME_WIDTH;
     info->geometry.max_height   = TIA_MAX_SCANLINES;
     info->geometry.aspect_ratio = 4.0f / 3.0f;
-    info->timing.fps            = 60.0;
-    info->timing.sample_rate    = 31400.0;
+    info->timing.fps            = region_fps(sys.active_region);
+    info->timing.sample_rate    = region_sample_rate(sys.active_region);
 }
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -588,10 +723,34 @@ static void poll_inputs(void)
     }
 }
 
+/* Push updated fps/sample_rate to the frontend. Called when the region
+ * changes (either user toggled the option, or auto-detect just locked). */
+static void push_av_info(void)
+{
+    struct retro_system_av_info info;
+    retro_get_system_av_info(&info);
+    if (environ_cb)
+        environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &info);
+}
+
 void retro_run(void)
 {
     int cycles = 0;
+    bool update = false;
     if (!sys.loaded) return;
+
+    /* Pick up option changes the user made mid-run. */
+    if (environ_cb &&
+        environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &update) && update) {
+        if (apply_region_option()) push_av_info();
+    }
+    /* If we're in auto mode and detection just locked this frame, apply. */
+    if (sys.region_setting < 0 && sys.tia.detect_locked &&
+        sys.active_region != sys.tia.detected_region) {
+        sys.active_region = sys.tia.detected_region;
+        tia_set_region(&sys.tia, sys.active_region);
+        push_av_info();
+    }
 
     input_poll_cb();
     poll_inputs();
@@ -603,17 +762,18 @@ void retro_run(void)
     sys.tia.frame_ready = false;
 
     {
-        /* 228-row output: 18 rows of top VBLANK padding (rendered black in
-         * tia_tick) + ~189 rows of visible content + bottom VBLANK/overscan
-         * padding. Anchor to visible_start - 18 so the top-VBLANK padding
-         * lands at the top of the output frame, which is where the NTSC
-         * video signal starts each field; most 2600 cores follow the same
-         * convention so screenshots align across cores. */
-        uint16_t anchor = (sys.tia.visible_start != 0xFFFF)
-                        ? sys.tia.visible_start
-                        : SHIP_OFFSET_FALLBACK;
-        uint16_t offset = (anchor > 18) ? (uint16_t)(anchor - 18) : 0;
-        uint16_t height = FRAME_HEIGHT_NOMINAL;
+        /* Per-region output: NTSC ships 228 rows with an 18-row top-VBLANK
+         * strip; PAL/SECAM ship 274 with a 1-row strip (otherwise the
+         * ~273-row PAL visible region would run off the bottom). Anchor at
+         * visible_start minus the region's top pad so content always lands
+         * `top_pad` rows below the frame top regardless of where the game
+         * chooses to end VBLANK. */
+        uint16_t top_pad = region_top_pad(sys.active_region);
+        uint16_t anchor  = (sys.tia.visible_start != 0xFFFF)
+                         ? sys.tia.visible_start
+                         : SHIP_OFFSET_FALLBACK;
+        uint16_t offset  = (anchor > top_pad) ? (uint16_t)(anchor - top_pad) : 0;
+        uint16_t height  = region_frame_height(sys.active_region);
         if (offset + height > TIA_MAX_SCANLINES)
             height = (uint16_t)(TIA_MAX_SCANLINES - offset);
         video_cb(sys.tia.fb + (size_t)offset * FRAME_WIDTH,
@@ -681,6 +841,12 @@ bool retro_load_game(const struct retro_game_info *info)
     }
 
     tia_init(&sys.tia);
+    /* Apply region option before the CPU starts: if the user forced a
+     * region, auto-detect never runs and the correct palette is in place
+     * from cold boot. Auto mode leaves active_region as NTSC until the
+     * detector locks a few frames in. */
+    apply_region_option();
+    tia_set_region(&sys.tia, sys.active_region);
     riot_init(&sys.riot);
     sys.riot.pa_changed     = keypad_update;
     sys.riot.pa_changed_ctx = NULL;
@@ -706,7 +872,18 @@ bool retro_load_game_special(unsigned type, const struct retro_game_info *info, 
 
 void retro_unload_game(void) { sys.loaded = false; }
 
-unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
+/* PAL60 reports NTSC because its timing is NTSC (60 Hz); SECAM reports
+ * PAL because SECAM consoles run at 50 Hz. */
+unsigned retro_get_region(void)
+{
+    switch (sys.active_region) {
+    case TIA_REGION_PAL:
+    case TIA_REGION_SECAM: return RETRO_REGION_PAL;
+    case TIA_REGION_NTSC:
+    case TIA_REGION_PAL60:
+    default:               return RETRO_REGION_NTSC;
+    }
+}
 
 /* Cart serialise layout: full ROM (CART_MAX_SIZE) + 4-byte size + 1 mapper +
  * 1 bank + 4 e0_slots + CART_SC_RAM_SIZE sc_ram + 1 sc_enabled flag.

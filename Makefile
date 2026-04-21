@@ -634,6 +634,15 @@ include Makefile.common
 OBJECTS := $(SOURCES_C:.c=.o)
 CFLAGS += $(fpic) $(PLATFORM_DEFINES)
 
+# Header-dependency tracking: each compile emits a .d file listing every
+# header pulled in by the .c, and we -include those so touching a header
+# rebuilds exactly the objects that depend on it. -MP adds phony targets
+# for each header so renaming/deleting one doesn't break the build.
+# MSVC uses its own /showIncludes flow; skip there.
+ifeq (,$(findstring msvc,$(platform)))
+CFLAGS += -MMD -MP
+endif
+
 CFLAGS += $(INCFLAGS)
 LFLAGS :=
 LDFLAGS += $(LIBM)
@@ -681,8 +690,10 @@ endif
 %.o: %.c
 	$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
 
+-include $(OBJECTS:.o=.d)
+
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(OBJECTS:.o=.d) $(TARGET)
 
 .PHONY: clean
 endif

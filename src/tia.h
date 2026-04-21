@@ -11,10 +11,26 @@
 #define TIA_VISIBLE_WIDTH    160
 #define TIA_MAX_SCANLINES    312   /* large enough for PAL */
 
+/* Region determines palette, nominal fps, and audio sample rate. PAL60 is
+ * PAL palette with NTSC-rate timing (used by a handful of European games
+ * authored for 60 Hz displays). SECAM uses an 8-colour reduced palette. */
+enum tia_region {
+    TIA_REGION_NTSC  = 0,
+    TIA_REGION_PAL   = 1,
+    TIA_REGION_PAL60 = 2,
+    TIA_REGION_SECAM = 3
+};
+
+/* How many past frames the auto-detect considers before locking. Skip
+ * frame 0 (RAM-init garbage) and sample frames 1..N; the threshold is a
+ * ~50-line gap (NTSC ~262, PAL ~312) so no median needed. */
+#define TIA_DETECT_FRAMES 5
+
 struct tia {
     /* Framebuffer (max size fits NTSC or PAL). Libretro reads this. */
     uint32_t fb[TIA_VISIBLE_WIDTH * TIA_MAX_SCANLINES];
     const uint32_t *palette;       /* pointer to active 128-entry palette */
+    enum tia_region region;        /* currently selected region */
 
     /* Beam position */
     uint16_t hpos;                 /* 0..227 */
@@ -134,9 +150,26 @@ struct tia {
     bool     inpt_ground;
     uint16_t paddle_charge_max[4];  /* target charge time in TIA color clocks */
     uint16_t paddle_charge_cnt[4];  /* running countdown; 0 = cap fully charged */
+
+    /* Region auto-detection. Counts scanlines between VSYNC rising edges
+     * for the first few frames after boot; once detect_locked is true, the
+     * result is written into detected_region. The libretro layer consults
+     * detected_region when the user has set "region = auto". Frame 0 is
+     * skipped because many ROMs emit a partial/garbage first frame while
+     * RAM initialises. */
+    uint16_t detect_samples[TIA_DETECT_FRAMES];
+    uint8_t  detect_count;         /* number of usable samples collected */
+    bool     detect_locked;
+    enum tia_region detected_region;
 };
 
 extern const uint32_t tia_ntsc_palette[128];
+extern const uint32_t tia_pal_palette[128];
+extern const uint32_t tia_secam_palette[128];
+
+/* Swap palette to match `r`. Does not change timing / fps (the libretro
+ * layer handles that via retro_get_system_av_info / SET_SYSTEM_AV_INFO). */
+void tia_set_region(struct tia *t, enum tia_region r);
 
 void tia_init(struct tia *t);
 void tia_reset(struct tia *t);

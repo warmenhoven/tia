@@ -29,6 +29,68 @@ const uint32_t tia_ntsc_palette[128] = {
 };
 
 /* ============================================================
+ *   PAL palette — 16 hues x 8 lumas. Hues 0/1/E/F are monochrome
+ *   on PAL (no chroma carrier for those values).
+ * ============================================================ */
+
+const uint32_t tia_pal_palette[128] = {
+    0x0B0B0B, 0x333333, 0x595959, 0x7B7B7B, 0x999999, 0xB6B6B6, 0xCFCFCF, 0xE6E6E6,
+    0x0B0B0B, 0x333333, 0x595959, 0x7B7B7B, 0x999999, 0xB6B6B6, 0xCFCFCF, 0xE6E6E6,
+    0x3B2400, 0x664700, 0x8B7000, 0xAC9200, 0xC5AE36, 0xDEC85E, 0xF7E27F, 0xFFF19E,
+    0x004500, 0x006F00, 0x3B9200, 0x65B009, 0x85CA3D, 0xA3E364, 0xBFFC84, 0xD5FFA5,
+    0x590000, 0x802700, 0xA15700, 0xBC7937, 0xD6985F, 0xEEB381, 0xFFCE9E, 0xFFDCBD,
+    0x004900, 0x007200, 0x169216, 0x45AF45, 0x6BC96B, 0x8BE38B, 0xA9FBA9, 0xC5FFC5,
+    0x640012, 0x890821, 0xA73D4D, 0xC26472, 0xDC8491, 0xF4A3AE, 0xFFBECA, 0xFFDAE0,
+    0x003D29, 0x006A48, 0x048E63, 0x3CAA84, 0x62C5A2, 0x83DFBE, 0xA1F8D9, 0xBEFFE9,
+    0x550046, 0x88006E, 0xA5318D, 0xC159AA, 0xDA7CC5, 0xF39ADF, 0xFFB9F3, 0xFFD4F6,
+    0x003651, 0x005A7D, 0x117E9C, 0x429CB8, 0x68B7D2, 0x88D2EB, 0xA6EBFF, 0xC3FFFF,
+    0x4C007C, 0x75009D, 0x932EB8, 0xAF57D2, 0xCA7AEB, 0xE499FF, 0xECB7FF, 0xF3D4FF,
+    0x002D83, 0x003EA4, 0x2D65BF, 0x5685DA, 0x79A2F2, 0x99BFFF, 0xB7DBFF, 0xD3F5FF,
+    0x220096, 0x5200B6, 0x7538CF, 0x945FE8, 0xB181FF, 0xC5A0FF, 0xD6BDFF, 0xE8DAFF,
+    0x00009A, 0x241DB6, 0x504AD0, 0x746FE9, 0x928EFF, 0xB1ADFF, 0xCECAFF, 0xE9E5FF,
+    0x0B0B0B, 0x333333, 0x595959, 0x7B7B7B, 0x999999, 0xB6B6B6, 0xCFCFCF, 0xE6E6E6,
+    0x0B0B0B, 0x333333, 0x595959, 0x7B7B7B, 0x999999, 0xB6B6B6, 0xCFCFCF, 0xE6E6E6
+};
+
+/* ============================================================
+ *   SECAM palette — SECAM on real 2600 produced only 8 colours
+ *   (luma-only chroma). We replicate the 8-colour set across all
+ *   16 hues; luma bits 1..3 of the colour register pick one of the
+ *   8 colours, hue bits are ignored.
+ * ============================================================ */
+
+const uint32_t tia_secam_palette[128] = {
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF,
+    0x000000, 0x2121FF, 0xF03C79, 0xFF50FF, 0x7FFF00, 0x7FFFFF, 0xFFFF3F, 0xFFFFFF
+};
+
+void tia_set_region(struct tia *t, enum tia_region r)
+{
+    t->region = r;
+    switch (r) {
+    case TIA_REGION_PAL:   t->palette = tia_pal_palette;   break;
+    case TIA_REGION_PAL60: t->palette = tia_pal_palette;   break;
+    case TIA_REGION_SECAM: t->palette = tia_secam_palette; break;
+    case TIA_REGION_NTSC:
+    default:               t->palette = tia_ntsc_palette;  break;
+    }
+}
+
+/* ============================================================
  *   Lifecycle
  * ============================================================ */
 
@@ -36,7 +98,8 @@ void tia_init(struct tia *t)
 {
     int i;
     memset(t, 0, sizeof(*t));
-    t->palette = tia_ntsc_palette;
+    tia_set_region(t, TIA_REGION_NTSC);
+    t->detected_region = TIA_REGION_NTSC;
     /* 0xFFFF is the "not yet observed" sentinel. memset-0 would make the
      * VBLANK handler's "only set if still 0xFFFF" guard reject the first
      * latch, so the libretro layer would never see a real visible_start. */
@@ -107,6 +170,12 @@ void tia_reset(struct tia *t)
         }
     }
     t->inpt_ground = false;
+    /* Re-arm auto-detect after a user-initiated reset: if they reset to
+     * switch ROMs (via load-content), the timing pattern may differ from
+     * the previous game, so the lock should refresh. */
+    memset(t->detect_samples, 0, sizeof(t->detect_samples));
+    t->detect_count = 0;
+    t->detect_locked = false;
 }
 
 /* ============================================================
@@ -526,6 +595,24 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
             t->visible_end   = t->_pending_vend;
             t->_pending_vstart = 0xFFFF;
             t->_pending_vend   = 0xFFFF;
+            /* Auto-detect: sample the just-finished frame's scanline count
+             * starting from frame 1 (frame 0 often has partial/garbage
+             * VSYNC while RAM initialises). After TIA_DETECT_FRAMES usable
+             * samples, classify as NTSC (~262) or PAL (~312). The gap is
+             * ~50 lines, far larger than any jitter, so a single pass of
+             * "count votes >275" suffices. */
+            if (!t->detect_locked && t->frame_number >= 1 &&
+                t->detect_count < TIA_DETECT_FRAMES) {
+                t->detect_samples[t->detect_count++] = t->scanline;
+                if (t->detect_count == TIA_DETECT_FRAMES) {
+                    int i, pal_votes = 0;
+                    for (i = 0; i < TIA_DETECT_FRAMES; i++)
+                        if (t->detect_samples[i] > 275) pal_votes++;
+                    t->detected_region = (pal_votes * 2 > TIA_DETECT_FRAMES)
+                                         ? TIA_REGION_PAL : TIA_REGION_NTSC;
+                    t->detect_locked = true;
+                }
+            }
             t->frame_number++;
             t->frame_ready = true;
             t->scanline = 0;
@@ -718,8 +805,15 @@ void tia_serialize(const struct tia *t, void *buf)
         *q++ = (uint8_t)(t->audio_sum_ct);
         *q++ = (uint8_t)(t->audio_sum_ct >> 8);
         /* Sample queue is transient; don't serialize. */
-        /* 26 bytes total: 7*2 + 6 + 6 padding = 20 used, 6 reserved */
-        *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0;
+        /* 26 bytes total: 7*2 + 6 + 6 tail = 20 used, 2 region, 4 reserved.
+         * Region survives save/load; detect_samples/count do not (if the
+         * save pre-dates the detect lock, detection re-runs over the next
+         * ~5 VSYNCs). Older save files have these bytes as 0, which maps
+         * to NTSC / unlocked — a safe default. */
+        *q++ = (uint8_t)t->region;
+        *q++ = (uint8_t)(((uint8_t)t->detected_region & 0x03) |
+                         (t->detect_locked ? 0x80 : 0));
+        *q++ = 0; *q++ = 0; *q++ = 0; *q++ = 0;
         /* Input (7 bytes): inpt[0..5] + ground flag. */
         {
             int i;
@@ -812,6 +906,12 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
         t->audio_sum[0] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum[1] = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
         t->audio_sum_ct = (uint32_t)q[0] | ((uint32_t)q[1] << 8); q += 2;
+        /* Region byte pair (see serialize for layout). Re-syncs palette. */
+        tia_set_region(t, (enum tia_region)(q[0] & 0x03));
+        t->detected_region = (enum tia_region)(q[1] & 0x03);
+        t->detect_locked   = (q[1] & 0x80) != 0;
+        t->detect_count    = t->detect_locked ? TIA_DETECT_FRAMES : 0;
+        memset(t->detect_samples, 0, sizeof(t->detect_samples));
     }
     /* Input: 7 bytes inpt state + 16 bytes paddle state. Located at offset 78. */
     {
