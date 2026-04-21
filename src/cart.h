@@ -6,9 +6,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define CART_MAX_SIZE      (32 * 1024)   /* 32K covers F4; bigger mappers TBD */
+#define CART_MAX_SIZE      (64 * 1024)   /* 64K covers F0 / Megaboy */
 #define CART_SC_RAM_SIZE   128
 #define CART_DPC_DISP_SIZE 2048          /* DPC display data ROM (2K) */
+#define CART_FA_RAM_SIZE   256           /* CBS RAM+: 256 bytes */
+#define CART_E7_RAM_SIZE   2048          /* M-Network: 1K lower + 4×256 upper */
 
 enum cart_mapper {
     CART_MAPPER_PLAIN = 0,  /* 2K or 4K ROM, no bank switching */
@@ -18,7 +20,10 @@ enum cart_mapper {
     CART_MAPPER_E0,         /* 8K Parker Bros: 3 × 1K slots + fixed 1K */
     CART_MAPPER_3F,         /* Tigervision: banks × 2K, write to $00-$3F */
     CART_MAPPER_FE,         /* Activision: 8K, bank switch on $01FE access */
-    CART_MAPPER_DPC         /* Pitfall II: 8K prog + 2K display + co-processor */
+    CART_MAPPER_DPC,        /* Pitfall II: 8K prog + 2K display + co-processor */
+    CART_MAPPER_FA,         /* CBS RAM+: 12K, 3 banks × 4K, 256B cart RAM */
+    CART_MAPPER_E7,         /* M-Network: 16K, 8 banks × 2K, 2K cart RAM */
+    CART_MAPPER_F0          /* Megaboy: 64K, 16 banks × 4K, +1 on $1FF0 access */
 };
 
 struct cart {
@@ -44,6 +49,20 @@ struct cart {
     uint64_t dpc_audio_cycles; /* CPU cycles at last music update */
     double   dpc_frac_clocks;  /* fractional DPC osc clocks remainder */
     const uint64_t *cpu_cycles; /* pointer to CPU cycle counter (for music timing) */
+
+    /* FA (CBS RAM+): 256 bytes of cart RAM. Writes on $1000-$10FF, reads
+     * on $1100-$11FF (same memory, different address windows). */
+    uint8_t  fa_ram[CART_FA_RAM_SIZE];
+
+    /* E7 (M-Network): 2K of cart RAM — one 1K block for the lower 2K slot
+     * (when enabled via $1FE7) plus four 256-byte banks for the upper 2K
+     * private RAM area ($1800-$19FF, bank selected via $1FE8-$1FEB).
+     * `e7_lower_ram` is true when the lower 2K window shows RAM instead
+     * of ROM. `e7_upper_bank` is the 0..3 selector for the 256-byte
+     * private-RAM bank. */
+    uint8_t  e7_ram[CART_E7_RAM_SIZE];
+    bool     e7_lower_ram;
+    uint8_t  e7_upper_bank;
 };
 
 /* Load ROM. Returns false if size is unsupported. Initialises mapper state

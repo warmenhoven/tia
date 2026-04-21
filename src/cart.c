@@ -85,6 +85,35 @@ static uint8_t detect_8k_mapper(const uint8_t *rom, size_t size)
     return CART_MAPPER_F8;
 }
 
+/* E7 (M-Network) vs F6: both are 16K. E7 uses the hotspot range $1FE0-$1FEB
+ * (bank selects + RAM enable), which F6 doesn't touch. Signature: any direct
+ * access to an address that mirrors to that range. Cart space ($1000-$1FFF)
+ * is mirrored at $3xxx, $5xxx, $7xxx, …, $Fxxx; games commonly reference the
+ * upper mirrors (e.g. BurgerTime uses $FFE0-$FFEB), so we accept any high
+ * byte whose low 5 bits are 0x1F. */
+static uint8_t detect_16k_mapper(const uint8_t *rom, size_t size)
+{
+    /* Count LDA/LDX/LDY/STA/STX/STY absolute to $xxE0..$xxEB where
+     * (xxHi & 0x1F) == 0x1F. Requires at least 3 matches to call it E7:
+     * real M-Network games hit these hotspots dozens of times, while F6
+     * ROMs occasionally score a single spurious match from a random data
+     * byte that happens to align with an opcode + address pattern. */
+    static const uint8_t ops[6] = { 0xAD, 0xAE, 0xAC, 0x8D, 0x8E, 0x8C };
+    size_t i;
+    int j, hits = 0;
+    for (i = 0; i + 2 < size; i++) {
+        for (j = 0; j < 6; j++) {
+            if (rom[i] != ops[j]) continue;
+            if ((rom[i + 2] & 0x1F) != 0x1F) continue;
+            if (rom[i + 1] >= 0xE0 && rom[i + 1] <= 0xEB) {
+                hits++;
+                if (hits >= 3) return CART_MAPPER_E7;
+            }
+        }
+    }
+    return CART_MAPPER_F6;
+}
+
 /* ============================================================
  *   Load
  * ============================================================ */
@@ -119,11 +148,27 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
         if (c->mapper == CART_MAPPER_F8) c->bank = 1;
         return true;
 
+    case 12288:
+        /* FA / CBS RAM+: 3 × 4K banks, 256 bytes cart RAM.
+         * Reset vector lives in bank 2 (top), so boot there. */
+        memcpy(c->data, rom, 12288);
+        c->size   = 12288;
+        c->mapper = CART_MAPPER_FA;
+        c->bank   = 2;
+        return true;
+
     case 16384:
         memcpy(c->data, rom, 16384);
         c->size   = 16384;
-        c->mapper = CART_MAPPER_F6;
-        c->bank   = 3;                       /* last bank */
+        c->mapper = detect_16k_mapper(rom, size);
+        if (c->mapper == CART_MAPPER_F6) {
+            c->bank = 3;                     /* F6: last bank */
+        } else {
+            /* E7: bank 7 is hardwired to the fixed upper 2K, so the
+             * switchable lower 2K starts in bank 0 by convention. The
+             * reset vector is in the fixed upper region regardless. */
+            c->bank = 0;
+        }
         return true;
 
     case 32768:
@@ -131,6 +176,15 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
         c->size   = 32768;
         c->mapper = CART_MAPPER_F4;
         c->bank   = 7;                       /* last bank */
+        return true;
+
+    case 65536:
+        /* F0 / Megaboy: 16 × 4K banks, advance on $1FF0 access.
+         * Boot bank is 15 (last, holds the reset vector). */
+        memcpy(c->data, rom, 65536);
+        c->size   = 65536;
+        c->mapper = CART_MAPPER_F0;
+        c->bank   = 15;
         return true;
 
     default:
@@ -286,6 +340,63 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
          * cart_snoop_bus when the CPU accesses $01FE (RIOT space). */
         return c->data[c->bank * 4096u + a];
 
+    case CART_MAPPER_FA:
+        /* Hotspots $1FF8/9/A select banks 0/1/2. Cart RAM: writes on
+         * $1000-$10FF, reads on $1100-$11FF (same 256 bytes, windowed). */
+        if      (a == 0xFF8) c->bank = 0;
+        else if (a == 0xFF9) c->bank = 1;
+        else if (a == 0xFFA) c->bank = 2;
+        if (a >= 0x100 && a < 0x200)
+            return c->fa_ram[a - 0x100];
+        return c->data[c->bank * 4096u + a];
+
+    case CART_MAPPER_E7: {
+        /* Memory map:
+         *   $1000-$17FF lower 2K: switchable ROM bank 0..6, or the 1K RAM
+         *       block when e7_lower_ram is set (writes $1000-$13FF, reads
+         *       $1400-$17FF — same 1K).
+         *   $1800-$19FF upper 2K private RAM (256-byte bank × 4): writes
+         *       $1800-$18FF, reads $1900-$19FF.
+         *   $1A00-$1FFF: hardwired to bank 7 (last 2K of ROM).
+         *
+         * Hotspots: $1FE0..$1FE6 select lower ROM bank 0..6; $1FE7 enables
+         * lower RAM; $1FE8..$1FEB select upper RAM bank 0..3. */
+        uint8_t ret;
+        if      (a >= 0xFE0 && a <= 0xFE6) { c->bank = (uint8_t)(a & 7); c->e7_lower_ram = false; }
+        else if (a == 0xFE7)               { c->e7_lower_ram = true; }
+        else if (a >= 0xFE8 && a <= 0xFEB) { c->e7_upper_bank = (uint8_t)(a & 3); }
+
+        if (a < 0x400) {
+            /* Lower-slot write window when RAM enabled; otherwise ROM. */
+            if (c->e7_lower_ram) return 0;  /* write-only window */
+            return c->data[c->bank * 2048u + a];
+        }
+        if (a < 0x800) {
+            /* Lower-slot read window. RAM (1K block) when enabled,
+             * otherwise continuation of the same ROM bank. */
+            if (c->e7_lower_ram) return c->e7_ram[a - 0x400];
+            return c->data[c->bank * 2048u + a];
+        }
+        if (a < 0x900) {
+            /* Upper private-RAM write window (write-only; read returns 0). */
+            return 0;
+        }
+        if (a < 0xA00) {
+            /* Upper private-RAM read window. */
+            ret = c->e7_ram[1024u + (uint16_t)c->e7_upper_bank * 256u + (a - 0x900)];
+            return ret;
+        }
+        /* $1A00-$1FFF: fixed upper 2K (bank 7). Offset within that bank
+         * is (a - 0x800) since bank 7 covers the 2K starting at offset
+         * 0x800 of our view. */
+        return c->data[7u * 2048u + (a - 0x800)];
+    }
+
+    case CART_MAPPER_F0:
+        /* Any access to $1FF0 advances bank by 1, wrapping at 16. */
+        if (a == 0xFF0) c->bank = (uint8_t)((c->bank + 1) & 0x0F);
+        return c->data[c->bank * 4096u + a];
+
     case CART_MAPPER_DPC: {
         dpc_clock_rng(c);
 
@@ -402,6 +513,32 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
 
     case CART_MAPPER_FE:
         /* ROM only; writes ignored. Bank switching is via $01FE snoop. */
+        return;
+
+    case CART_MAPPER_FA:
+        if (a == 0xFF8)      { c->bank = 0; return; }
+        else if (a == 0xFF9) { c->bank = 1; return; }
+        else if (a == 0xFFA) { c->bank = 2; return; }
+        if (a < 0x100)
+            c->fa_ram[a] = data;
+        return;
+
+    case CART_MAPPER_E7:
+        if      (a >= 0xFE0 && a <= 0xFE6) { c->bank = (uint8_t)(a & 7); c->e7_lower_ram = false; return; }
+        else if (a == 0xFE7)               { c->e7_lower_ram = true;  return; }
+        else if (a >= 0xFE8 && a <= 0xFEB) { c->e7_upper_bank = (uint8_t)(a & 3); return; }
+        if (a < 0x400 && c->e7_lower_ram) {
+            c->e7_ram[a] = data;
+            return;
+        }
+        if (a >= 0x800 && a < 0x900) {
+            c->e7_ram[1024u + (uint16_t)c->e7_upper_bank * 256u + (a - 0x800)] = data;
+            return;
+        }
+        return;
+
+    case CART_MAPPER_F0:
+        if (a == 0xFF0) c->bank = (uint8_t)((c->bank + 1) & 0x0F);
         return;
 
     case CART_MAPPER_DPC: {

@@ -893,7 +893,11 @@ unsigned retro_get_region(void)
 /* DPC state: 8 tops + 8 bottoms + 16 counter bytes + 8 flags + 3 music
  * mode + 1 random + 8 audio_cycles + 8 frac_clocks = 60 bytes. */
 #define CART_DPC_SER_BYTES 60
-#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1 + 1 + CART_DPC_SER_BYTES)
+/* FA (256 RAM) + E7 (2048 RAM + 1 packed byte for lower-ram-flag | upper-bank) */
+#define CART_FA_SER_BYTES  CART_FA_RAM_SIZE
+#define CART_E7_SER_BYTES (CART_E7_RAM_SIZE + 1)
+#define CART_SER_BYTES (CART_MAX_SIZE + 4 + 1 + 1 + 4 + CART_SC_RAM_SIZE + 1 + 1 \
+                      + CART_DPC_SER_BYTES + CART_FA_SER_BYTES + CART_E7_SER_BYTES)
 #define SYS_SER_BYTES  1                /* packed console-switch state */
 
 size_t retro_serialize_size(void)
@@ -946,6 +950,13 @@ bool retro_serialize(void *data, size_t size)
     } p += 8; }
     memcpy(p, &sys.cart.dpc_frac_clocks, 8); p += 8;
 
+    /* FA (CBS RAM+) + E7 (M-Network) state. Both blocks are emitted
+     * unconditionally so serialize_size stays constant across mappers. */
+    memcpy(p, sys.cart.fa_ram, CART_FA_RAM_SIZE); p += CART_FA_RAM_SIZE;
+    memcpy(p, sys.cart.e7_ram, CART_E7_RAM_SIZE); p += CART_E7_RAM_SIZE;
+    *p++ = (uint8_t)((sys.cart.e7_lower_ram ? 0x80u : 0u)
+                   | (sys.cart.e7_upper_bank & 0x03u));
+
     *p++ = (uint8_t)((sys.sw_color        ? 0x01u : 0u)
                    | (sys.sw_left_diff_a  ? 0x02u : 0u)
                    | (sys.sw_right_diff_a ? 0x04u : 0u));
@@ -996,6 +1007,14 @@ bool retro_unserialize(const void *data, size_t size)
       p += 8;
     }
     memcpy(&sys.cart.dpc_frac_clocks, p, 8); p += 8;
+
+    memcpy(sys.cart.fa_ram, p, CART_FA_RAM_SIZE); p += CART_FA_RAM_SIZE;
+    memcpy(sys.cart.e7_ram, p, CART_E7_RAM_SIZE); p += CART_E7_RAM_SIZE;
+    {
+        uint8_t b = *p++;
+        sys.cart.e7_lower_ram  = (b & 0x80) != 0;
+        sys.cart.e7_upper_bank = (uint8_t)(b & 0x03);
+    }
 
     {
         uint8_t sw = *p++;

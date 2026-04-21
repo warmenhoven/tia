@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+#include <stdlib.h>
 #include <string.h>
 #include "cart.h"
 #include "test_framework.h"
@@ -45,7 +46,7 @@ static int test_load_bad_size_fails(void)
     uint8_t rom[1024];
     ASSERT_TRUE(!cart_load(&c, rom, 1024));
     ASSERT_TRUE(!cart_load(&c, rom, 3000));
-    ASSERT_TRUE(!cart_load(&c, rom, 65536));
+    ASSERT_TRUE(!cart_load(&c, rom, 20480));   /* between 16K (F6/E7) and 32K (F4) */
     return 0;
 }
 
@@ -294,6 +295,213 @@ static int test_3f_bank_switch_via_snoop(void)
     return 0;
 }
 
+/* ============================================================
+ *   FA (CBS RAM+): 12K, 3 banks, 256 B RAM
+ * ============================================================ */
+
+static int test_fa_loads_and_starts_in_last_bank(void)
+{
+    struct cart c;
+    uint8_t rom[12288];
+    memset(rom, 0, sizeof(rom));
+    rom[0 * 4096 + 0] = 0xAA;         /* byte 0 of bank 0 */
+    rom[1 * 4096 + 0] = 0xBB;
+    rom[2 * 4096 + 0] = 0xCC;
+    ASSERT_TRUE(cart_load(&c, rom, 12288));
+    ASSERT_EQ(c.mapper, CART_MAPPER_FA);
+    ASSERT_EQ(c.bank, 2);
+    ASSERT_EQ(cart_read(&c, 0x1000), 0xCC);   /* bank 2 at offset 0 */
+    return 0;
+}
+
+static int test_fa_hotspots_switch_banks(void)
+{
+    struct cart c;
+    uint8_t rom[12288];
+    memset(rom, 0, sizeof(rom));
+    rom[0 * 4096 + 0x200] = 0xA0;
+    rom[1 * 4096 + 0x200] = 0xB0;
+    rom[2 * 4096 + 0x200] = 0xC0;
+    cart_load(&c, rom, 12288);
+    cart_read(&c, 0x1FF8);  ASSERT_EQ(cart_read(&c, 0x1200), 0xA0);
+    cart_read(&c, 0x1FF9);  ASSERT_EQ(cart_read(&c, 0x1200), 0xB0);
+    cart_read(&c, 0x1FFA);  ASSERT_EQ(cart_read(&c, 0x1200), 0xC0);
+    return 0;
+}
+
+static int test_fa_ram_roundtrip(void)
+{
+    /* Write via $1000-$10FF, read back via $1100-$11FF. */
+    struct cart c;
+    uint8_t rom[12288];
+    memset(rom, 0, sizeof(rom));
+    cart_load(&c, rom, 12288);
+    cart_write(&c, 0x1000, 0x12);
+    cart_write(&c, 0x10FF, 0x34);
+    ASSERT_EQ(cart_read(&c, 0x1100), 0x12);
+    ASSERT_EQ(cart_read(&c, 0x11FF), 0x34);
+    return 0;
+}
+
+/* ============================================================
+ *   E7 (M-Network): 16K, 8 × 2K banks, 1K + 4×256 B RAM
+ * ============================================================ */
+
+static int test_e7_detection(void)
+{
+    /* E7 detected when ROM has ≥3 direct-addressing instructions against
+     * addresses that mirror $1FE0..$1FEB. Below that threshold it's F6
+     * (single-byte matches occasionally hit from random data bytes in F6
+     * graphics tables). */
+    struct cart c;
+    uint8_t rom[16384];
+
+    /* Clean ROM → F6. */
+    memset(rom, 0, sizeof(rom));
+    ASSERT_TRUE(cart_load(&c, rom, 16384));
+    ASSERT_EQ(c.mapper, CART_MAPPER_F6);
+
+    /* 1 spurious hit stays F6 (under threshold). */
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 0xAD; rom[1] = 0xE0; rom[2] = 0x1F;
+    ASSERT_TRUE(cart_load(&c, rom, 16384));
+    ASSERT_EQ(c.mapper, CART_MAPPER_F6);
+
+    /* 3 hits → E7. */
+    rom[3] = 0xAD; rom[4] = 0xE1; rom[5] = 0x1F;
+    rom[6] = 0xAD; rom[7] = 0xE2; rom[8] = 0x1F;
+    ASSERT_TRUE(cart_load(&c, rom, 16384));
+    ASSERT_EQ(c.mapper, CART_MAPPER_E7);
+
+    /* Upper-mirror high byte ($FFEx) also counts — BurgerTime-style. */
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 0xAD; rom[1] = 0xE0; rom[2] = 0xFF;
+    rom[3] = 0xAD; rom[4] = 0xE1; rom[5] = 0xFF;
+    rom[6] = 0xAD; rom[7] = 0xE2; rom[8] = 0xFF;
+    ASSERT_TRUE(cart_load(&c, rom, 16384));
+    ASSERT_EQ(c.mapper, CART_MAPPER_E7);
+    return 0;
+}
+
+static int test_e7_lower_bank_switches(void)
+{
+    struct cart c;
+    uint8_t rom[16384];
+    int b;
+    memset(rom, 0, sizeof(rom));
+    /* Three hotspot refs to trip the E7 detector (threshold ≥3). */
+    rom[0] = 0xAD; rom[1] = 0xE0; rom[2] = 0x1F;
+    rom[3] = 0xAD; rom[4] = 0xE1; rom[5] = 0x1F;
+    rom[6] = 0xAD; rom[7] = 0xE2; rom[8] = 0x1F;
+    for (b = 0; b < 7; b++) rom[b * 2048 + 0x100] = (uint8_t)(0xA0 + b);
+    cart_load(&c, rom, 16384);
+    /* Select each bank 0..6 for the lower 2K and confirm. */
+    for (b = 0; b < 7; b++) {
+        cart_read(&c, 0x1FE0 + b);
+        if (cart_read(&c, 0x1100) != (uint8_t)(0xA0 + b)) return 1;
+    }
+    return 0;
+}
+
+static int test_e7_upper_2k_is_fixed_bank7(void)
+{
+    /* Bank 7 is 2K. $1800-$19FF is private RAM (shadows the first 512
+     * bytes of bank 7), so the ROM-visible window is $1A00-$1FFF,
+     * mapping to bank 7 offset 0x200..0x7FF. $1D00 → offset 0x500. */
+    struct cart c;
+    uint8_t rom[16384];
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 0xAD; rom[1] = 0xE0; rom[2] = 0x1F;
+    rom[7 * 2048 + 0x500] = 0xF7;
+    cart_load(&c, rom, 16384);
+    ASSERT_EQ(cart_read(&c, 0x1D00), 0xF7);
+    /* Switching the lower bank doesn't disturb the upper fixed slot. */
+    cart_read(&c, 0x1FE3);
+    ASSERT_EQ(cart_read(&c, 0x1D00), 0xF7);
+    return 0;
+}
+
+static int test_e7_lower_ram_write_read(void)
+{
+    /* $1FE7 enables 1K RAM in the lower 2K: writes $1000-$13FF,
+     * reads $1400-$17FF (same 1K). */
+    struct cart c;
+    uint8_t rom[16384];
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 0xAD; rom[1] = 0xE0; rom[2] = 0x1F;
+    rom[3] = 0xAD; rom[4] = 0xE1; rom[5] = 0x1F;
+    rom[6] = 0xAD; rom[7] = 0xE2; rom[8] = 0x1F;
+    cart_load(&c, rom, 16384);
+    cart_read(&c, 0x1FE7);                /* enable lower RAM */
+    cart_write(&c, 0x1000, 0x55);
+    cart_write(&c, 0x13FF, 0xAA);
+    ASSERT_EQ(cart_read(&c, 0x1400), 0x55);
+    ASSERT_EQ(cart_read(&c, 0x17FF), 0xAA);
+    return 0;
+}
+
+static int test_e7_upper_ram_banked(void)
+{
+    /* $1FE8..$1FEB pick one of four 256-byte private-RAM banks for
+     * the $1800-$19FF upper slot. Each bank stores independently. */
+    struct cart c;
+    uint8_t rom[16384];
+    int b;
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 0xAD; rom[1] = 0xE0; rom[2] = 0x1F;
+    rom[3] = 0xAD; rom[4] = 0xE1; rom[5] = 0x1F;
+    rom[6] = 0xAD; rom[7] = 0xE2; rom[8] = 0x1F;
+    cart_load(&c, rom, 16384);
+    /* Write a bank-identifying byte into each private bank. */
+    for (b = 0; b < 4; b++) {
+        cart_read(&c, 0x1FE8 + b);
+        cart_write(&c, 0x1850, (uint8_t)(0xB0 + b));
+    }
+    /* Read each back through the read window ($1900-$19FF). */
+    for (b = 0; b < 4; b++) {
+        cart_read(&c, 0x1FE8 + b);
+        if (cart_read(&c, 0x1950) != (uint8_t)(0xB0 + b)) return 1;
+    }
+    return 0;
+}
+
+/* ============================================================
+ *   F0 / Megaboy: 64K, +1-per-$1FF0-access cycle-forward bank
+ * ============================================================ */
+
+static int test_f0_loads_and_starts_in_last_bank(void)
+{
+    struct cart c;
+    uint8_t *rom = (uint8_t *)calloc(65536, 1);
+    int i;
+    for (i = 0; i < 16; i++) rom[i * 4096 + 0x500] = (uint8_t)i;
+    ASSERT_TRUE(cart_load(&c, rom, 65536));
+    ASSERT_EQ(c.mapper, CART_MAPPER_F0);
+    ASSERT_EQ(c.bank, 15);
+    ASSERT_EQ(cart_read(&c, 0x1500), 15);
+    free(rom);
+    return 0;
+}
+
+static int test_f0_hotspot_cycles_through_all_banks(void)
+{
+    struct cart c;
+    uint8_t *rom = (uint8_t *)calloc(65536, 1);
+    int i;
+    for (i = 0; i < 16; i++) rom[i * 4096 + 0x500] = (uint8_t)i;
+    cart_load(&c, rom, 65536);
+    /* Start bank 15; each $1FF0 access advances by 1 (mod 16). */
+    for (i = 0; i < 20; i++) {
+        cart_read(&c, 0x1FF0);
+        if (cart_read(&c, 0x1500) != (uint8_t)((16 + i) & 0x0F)) {
+            free(rom);
+            return 1;
+        }
+    }
+    free(rom);
+    return 0;
+}
+
 TEST_MAIN_BEGIN
     RUN_TEST(test_load_4k);
     RUN_TEST(test_load_2k_mirrors);
@@ -309,4 +517,14 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_e0_slot_switching);
     RUN_TEST(test_3f_detection_and_fixed_upper);
     RUN_TEST(test_3f_bank_switch_via_snoop);
+    RUN_TEST(test_fa_loads_and_starts_in_last_bank);
+    RUN_TEST(test_fa_hotspots_switch_banks);
+    RUN_TEST(test_fa_ram_roundtrip);
+    RUN_TEST(test_e7_detection);
+    RUN_TEST(test_e7_lower_bank_switches);
+    RUN_TEST(test_e7_upper_2k_is_fixed_bank7);
+    RUN_TEST(test_e7_lower_ram_write_read);
+    RUN_TEST(test_e7_upper_ram_banked);
+    RUN_TEST(test_f0_loads_and_starts_in_last_bank);
+    RUN_TEST(test_f0_hotspot_cycles_through_all_banks);
 TEST_MAIN_END
