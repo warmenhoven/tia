@@ -2,9 +2,9 @@
 #ifndef TIA_CART_H
 #define TIA_CART_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <stddef.h>
+
+#include "compat.h"
 
 #define CART_MAX_SIZE      (64 * 1024)   /* 64K covers F0 / Megaboy */
 #define CART_SC_RAM_SIZE   128

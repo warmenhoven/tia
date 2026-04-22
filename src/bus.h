@@ -2,7 +2,7 @@
 #ifndef TIA_BUS_H
 #define TIA_BUS_H
 
-#include <stdint.h>
+#include "compat.h"
 #include "cpu.h"
 #include "tia.h"
 #include "riot.h"

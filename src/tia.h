@@ -2,9 +2,9 @@
 #ifndef TIA_TIA_H
 #define TIA_TIA_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <stddef.h>
+
+#include "compat.h"
 
 #define TIA_HBLANK_CLOCKS    68
 #define TIA_SCANLINE_CLOCKS  228

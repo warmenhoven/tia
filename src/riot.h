@@ -2,9 +2,9 @@
 #ifndef TIA_RIOT_H
 #define TIA_RIOT_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <stddef.h>
+
+#include "compat.h"
 
 /* MOS 6532 RIOT: 128B RAM + 2 I/O ports + programmable timer.
  *

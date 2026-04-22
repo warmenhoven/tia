@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
 
+#include "compat.h"
 #include "libretro.h"
 #include "cpu.h"
 #include "tia.h"

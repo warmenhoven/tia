@@ -2,9 +2,9 @@
 #ifndef TIA_CPU_H
 #define TIA_CPU_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <stddef.h>
+
+#include "compat.h"
 
 enum {
     CPU_FLAG_C = 0x01,
