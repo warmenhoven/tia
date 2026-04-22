@@ -212,10 +212,10 @@ static int test_playfield_over_background(void)
     tia_write(&t, 0x08, 0x82);
     tia_write(&t, 0x09, 0x44);
     tia_write(&t, 0x0D, 0x10);
+    full_scanline(&t);              /* drains DAC pipeline + PF0 delay */
     bg = BG_COLOR(t);
     pf = PF_COLOR(t);
     ASSERT_TRUE(bg != pf);
-    full_scanline(&t);
     ASSERT_EQ(t.fb[0], pf);
     ASSERT_EQ(t.fb[4], bg);
     return 0;

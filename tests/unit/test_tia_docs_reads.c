@@ -156,13 +156,19 @@ static int test_inpt4_mirrored_at_high_nibble(void)
  * slots covering all 45 writable registers plus strobes).
  *
  * Test COLUBK (write-only) at 0x09 and its mirror at 0x49 (bit 6 set).
- * Our implementation handles this via (addr & 0x3F). */
-
+ * Our implementation handles this via (addr & 0x3F).
+ *
+ * The two tia_ticks after the write are NOT part of the docs claim —
+ * they drain the 1-color-clock DAC pipeline delay on COLUBK that the
+ * oracle shows (and which the SPG is silent on). We still verify the
+ * docs claim: that a write to $49 ultimately lands in the same register
+ * as a write to $09 would. */
 static int test_colubk_mirror_write(void)
 {
     struct tia t;
     tia_init(&t);
     tia_write(&t, 0x49, 0x82);   /* mirror of COLUBK (0x09) */
+    tia_tick(&t); tia_tick(&t);  /* drain DAC pipeline (see note above) */
     ASSERT_EQ(t.colubk, 0x82);
     return 0;
 }

@@ -726,6 +726,7 @@ static void delay_push(struct tia *t, uint8_t reg, uint8_t val, int delay)
 static void delay_apply(struct tia *t, uint8_t reg, uint8_t data)
 {
     switch (reg) {
+    case 0x09: t->colubk = data; break;
     case 0x0B: t->refp0 = (data & 0x08) != 0; break;
     case 0x0C: t->refp1 = (data & 0x08) != 0; break;
     case 0x0D: t->pf0 = data; break;
@@ -847,7 +848,7 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
     case 0x06: t->colup0 = data; break;
     case 0x07: t->colup1 = data; break;
     case 0x08: t->colupf = data; break;
-    case 0x09: t->colubk = data; break;
+    case 0x09: delay_push(t, 0x09, data, 2); break; /* COLUBK — 1 color-clock DAC pipeline delay (oracle vs csim) */
     case 0x0A: t->ctrlpf = data; break;
     case 0x0B: delay_push(t, 0x0B, data, 1); break; /* REFP0 — 1 clk */
     case 0x0C: delay_push(t, 0x0C, data, 1); break; /* REFP1 — 1 clk */

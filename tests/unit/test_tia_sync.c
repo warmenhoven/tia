@@ -168,6 +168,7 @@ static int test_colubk_mirror_addresses(void)
     struct tia t;
     tia_init(&t);
     tia_write(&t, 0x49, 0x82);             /* $09 | 0x40 mirror */
+    tia_tick(&t); tia_tick(&t);            /* drain COLUBK's 2-tick DAC pipeline delay */
     ASSERT_EQ(t.colubk, 0x82);
     return 0;
 }

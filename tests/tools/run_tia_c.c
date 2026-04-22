@@ -41,10 +41,13 @@ static void emit_record(struct harness *h)
 
     fprintf(h->trace,
         "{\"hc\": %llu, \"cpu_hc\": %llu, "
+        "\"hpos\": %u, \"scanline\": %u, \"hmove_blank\": %u, "
         "\"vsync\": %d, \"vblank\": %d, \"wsync\": %d, \"rdy\": %d, "
         "\"lum\": %u, \"col\": %u, \"rgba\": %u}\n",
         (unsigned long long)h->hc,
         (unsigned long long)(h->cpu.cycles * 2ULL),
+        (unsigned)h->tia.hpos, (unsigned)h->tia.scanline,
+        (unsigned)h->tia.hmove_blank,
         h->tia.vsync ? 1 : 0, h->tia.vblank ? 1 : 0, wsync, rdy,
         (unsigned)lum, (unsigned)col, (unsigned)rgba);
 }

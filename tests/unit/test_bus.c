@@ -25,6 +25,7 @@ static int test_decode_tia_region(void)
     struct cpu c; struct tia t; struct riot r; struct cart ct; struct bus b;
     setup(&c, &t, &r, &ct, &b);
     bus_write(&b, 0x0009, 0x44);   /* COLUBK at TIA region */
+    tia_tick(&t); tia_tick(&t);    /* drain COLUBK's 2-tick DAC pipeline delay */
     ASSERT_EQ(t.colubk, 0x44);
     return 0;
 }
@@ -62,6 +63,7 @@ static int test_upper_address_bits_ignored(void)
     }
     /* Address $4009: $4009 & 0x1FFF = $0009 → TIA. Write should land. */
     bus_write(&b, 0x4009, 0x66);
+    tia_tick(&t); tia_tick(&t);
     ASSERT_EQ(t.colubk, 0x66);
     return 0;
 }
@@ -125,6 +127,7 @@ static int test_writes_dont_stall(void)
     /* A write should complete without stalling — rdy still asserted after. */
     bus_write(&b, 0x0009, 0x77);
     ASSERT_TRUE(t.rdy_asserted);
+    tia_tick(&t); tia_tick(&t);     /* drain COLUBK delay */
     ASSERT_EQ(t.colubk, 0x77);
     /* hpos should only have advanced 3 clocks, not stalled to next line. */
     ASSERT_TRUE(t.hpos < 228);
