@@ -20,6 +20,17 @@ tests/unit/test_*
 tests/tools/run_tia_c
 !tests/tools/run_tia_c.c
 
+# Native Sim2600 port (tests/oracle/csim): sources + Makefile + converter
+# + verifier are checked in.  Everything below is produced by `make`,
+# `convert.py`, or by running the binary, and is regenerated on demand.
+tests/oracle/csim/sim2600
+tests/oracle/csim/*.ndjson
+tests/oracle/csim/*.trace
+tests/oracle/csim/*.pix
+tests/oracle/csim/*.vtrace
+tests/oracle/csim/*.csv
+tests/oracle/csim/*.log
+
 # Python
 tests/int/.venv/
 __pycache__/

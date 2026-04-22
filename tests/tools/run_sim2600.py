@@ -8,6 +8,12 @@ streaming JSON trace of per-clock state. These traces are the
 "golden reference" used by the oracle-backed unit tests against
 our tia.c implementation.
 
+If the native C port at tests/oracle/csim/sim2600 is available and
+up-to-date, it is invoked instead of the Python oracle for a ~55×
+speedup.  The two produce byte-identical NDJSON output.  Set
+SIM2600_FORCE_PYTHON=1 to skip the C port and use the Python
+implementation directly.
+
 Trace format (newline-delimited JSON):
 
   Line 1:  header
@@ -38,10 +44,30 @@ Use --every 1 for per-half-clock fidelity when debugging timing.
 import argparse
 import json
 import os
+import subprocess
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SIM_DIR = os.path.normpath(os.path.join(HERE, '..', 'oracle', 'Sim2600'))
+HERE     = os.path.dirname(os.path.abspath(__file__))
+SIM_DIR  = os.path.normpath(os.path.join(HERE, '..', 'oracle', 'Sim2600'))
+CSIM_DIR = os.path.normpath(os.path.join(HERE, '..', 'oracle', 'csim'))
+
+
+def try_csim(rom, halfclocks, every, out):
+    """Invoke the native C port if present + built.  Returns True on success,
+    False to fall back to the Python path."""
+    if os.environ.get('SIM2600_FORCE_PYTHON'):
+        return False
+    binary = os.path.join(CSIM_DIR, 'sim2600')
+    cpu    = os.path.join(CSIM_DIR, 'chip_6502.ckt')
+    tia    = os.path.join(CSIM_DIR, 'chip_TIA.ckt')
+    if not (os.path.isfile(binary) and os.access(binary, os.X_OK)
+            and os.path.isfile(cpu) and os.path.isfile(tia)):
+        return False
+    cmd = [binary, '--cpu', cpu, '--tia', tia, '--rom', rom,
+           '--halfclocks', str(halfclocks), '--every', str(every),
+           '--ndjson', out]
+    r = subprocess.run(cmd)
+    return r.returncode == 0
 
 
 def main():
@@ -64,6 +90,10 @@ def main():
         sys.exit('ROM not found: %s' % args.rom)
     if not os.path.isdir(SIM_DIR):
         sys.exit('Sim2600 not found at %s (fetch it first).' % SIM_DIR)
+
+    # Prefer the native C port when available — byte-identical output, ~55× faster.
+    if try_csim(args.rom, args.halfclocks, args.every, args.out):
+        return
 
     sys.path.insert(0, SIM_DIR)
 
