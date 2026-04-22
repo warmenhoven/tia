@@ -16,6 +16,10 @@ tests/unit/test_*
 !tests/unit/test_*.c
 !tests/unit/test_*.h
 
+# Oracle-harness tool binary (extension-less); source is checked in.
+tests/tools/run_tia_c
+!tests/tools/run_tia_c.c
+
 # Python
 tests/int/.venv/
 __pycache__/
@@ -26,6 +30,16 @@ tia_libretro*
 
 # Test data fetched on demand by tests/tools/fetch_harte.py
 tests/unit/roms/harte_65x02.bin
+
+# Oracle test harness — Sim2600 is supplied externally (either as a git
+# submodule or a dev-setup clone, TBD). Golden traces are generated from
+# it and re-generation is a manual step, so we don't check them in either.
+tests/oracle/Sim2600/
+tests/oracle/golden/
+
+# Test ROMs are generated on demand by tests/tools/build_test_roms.py;
+# the generator is source of truth.
+tests/oracle/test_roms/
 
 # Editors
 .DS_Store

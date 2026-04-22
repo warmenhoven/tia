@@ -614,6 +614,7 @@ void tia_tick(struct tia *t)
      * during VBLANK expires off-screen instead of bleeding into the first
      * visible scanline (Adventure's yellow castle top row exhibited this
      * as an 8-pixel black stub). */
+    t->last_colulum = 0;
     if (t->hpos >= TIA_HBLANK_CLOCKS &&
         !t->vsync &&
         t->scanline < TIA_MAX_SCANLINES) {
@@ -630,7 +631,9 @@ void tia_tick(struct tia *t)
         } else if (t->hmove_blank > 0) {
             out = t->palette[0];          /* HMOVE comb: black */
         } else {
-            out = t->palette[(pixel_color(t, x) >> 1) & 0x7F];
+            uint8_t ci = (uint8_t)((pixel_color(t, x) >> 1) & 0x7F);
+            out = t->palette[ci];
+            t->last_colulum = ci;
         }
         t->fb[y * TIA_VISIBLE_WIDTH + x] = out;
     }

@@ -65,6 +65,12 @@ struct tia {
     /* CPU stall request (WSYNC). The bus layer polls this. */
     bool     rdy_asserted;
 
+    /* Pre-palette 7-bit colour:luminance (col<<3 | lum) driven to the DAC
+     * on the most recent tick, 0 during HBLANK/VBLANK/VSYNC/HMOVE blank.
+     * Populated by tia_tick; not serialised (recomputed on the next tick).
+     * Used only by the oracle test harness. */
+    uint8_t  last_colulum;
+
     /* Color registers */
     uint8_t  colubk;
     uint8_t  colupf;
