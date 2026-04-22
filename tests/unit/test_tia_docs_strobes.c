@@ -109,8 +109,12 @@ static int test_rsync_wraps_after_3_ticks(void)
 static int test_hmove_strobe_starts_8_clock_blank(void)
 {
     struct tia t;
+    int i;
     tia_init(&t);
     tia_write(&t, 0x2A, 0);
+    /* HMOVE is pipelined 6 clocks on real hardware before the comb
+     * starts, so drain those before asserting. */
+    for (i = 0; i < 6; i++) tia_tick(&t);
     ASSERT_EQ(t.hmove_blank, 8);
     return 0;
 }

@@ -128,7 +128,7 @@ static int test_paddle_zero_charge_is_immediate(void)
 static int test_serialize_input(void)
 {
     struct tia a, b;
-    uint8_t buf[128];
+    uint8_t buf[256];
     size_t sz = tia_serialize_size();
     ASSERT_TRUE(sz <= sizeof(buf));
     tia_init(&a);

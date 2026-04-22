@@ -10,6 +10,15 @@ static void full_scanline(struct tia *t)
     for (i = 0; i < TIA_SCANLINE_CLOCKS; i++) tia_tick(t);
 }
 
+/* Issue an HMOVE strobe and drain the 6-clock pipeline so the motion
+ * deltas are applied to the sprite positions before the caller asserts. */
+static void hmove_and_drain(struct tia *t)
+{
+    int i;
+    tia_write(t, 0x2A, 0);
+    for (i = 0; i < 6; i++) tia_tick(t);
+}
+
 static int expect_range(const struct tia *t, uint16_t x_lo, uint16_t x_hi,
                         uint32_t color, const char *label)
 {
@@ -46,7 +55,7 @@ static int test_hmove_p0_positive_moves_left(void)
     std_setup(&t);
     t.p0_pos = 40;
     tia_write(&t, 0x20, 0x70);    /* HMP0 = +7 -> move left by 7 */
-    tia_write(&t, 0x2A, 0);       /* HMOVE */
+    hmove_and_drain(&t);
     ASSERT_EQ(t.p0_pos, 33);
     return 0;
 }
@@ -57,7 +66,7 @@ static int test_hmove_p0_negative_moves_right(void)
     std_setup(&t);
     t.p0_pos = 40;
     tia_write(&t, 0x20, 0x80);    /* HMP0 = -8 -> move right by 8 */
-    tia_write(&t, 0x2A, 0);
+    hmove_and_drain(&t);
     ASSERT_EQ(t.p0_pos, 48);
     return 0;
 }
@@ -68,7 +77,7 @@ static int test_hmove_p0_minus_one(void)
     std_setup(&t);
     t.p0_pos = 40;
     tia_write(&t, 0x20, 0xF0);    /* HMP0 = -1 -> move right by 1 */
-    tia_write(&t, 0x2A, 0);
+    hmove_and_drain(&t);
     ASSERT_EQ(t.p0_pos, 41);
     return 0;
 }
@@ -79,7 +88,7 @@ static int test_hmove_zero_no_motion(void)
     std_setup(&t);
     t.p0_pos = 40;
     tia_write(&t, 0x20, 0x00);
-    tia_write(&t, 0x2A, 0);
+    hmove_and_drain(&t);
     ASSERT_EQ(t.p0_pos, 40);
     return 0;
 }
@@ -94,7 +103,7 @@ static int test_hmove_applies_to_all_objects(void)
     tia_write(&t, 0x22, 0x10);    /* HMM0 +1 */
     tia_write(&t, 0x23, 0xF0);    /* HMM1 -1 */
     tia_write(&t, 0x24, 0x50);    /* HMBL +5 */
-    tia_write(&t, 0x2A, 0);
+    hmove_and_drain(&t);
     ASSERT_EQ(t.p0_pos, 47);
     ASSERT_EQ(t.p1_pos, 52);
     ASSERT_EQ(t.m0_pos, 49);
@@ -108,13 +117,15 @@ static int test_hmove_applies_to_all_objects(void)
 static int test_hmclr_zeroes_all_hm(void)
 {
     struct tia t;
+    int i;
     std_setup(&t);
     tia_write(&t, 0x20, 0x70);
     tia_write(&t, 0x21, 0x80);
     tia_write(&t, 0x22, 0x30);
     tia_write(&t, 0x23, 0xF0);
     tia_write(&t, 0x24, 0x50);
-    tia_write(&t, 0x2B, 0);       /* HMCLR */
+    tia_write(&t, 0x2B, 0);       /* HMCLR — 2-clk delay */
+    for (i = 0; i < 2; i++) tia_tick(&t);
     ASSERT_EQ(t.hmp0, 0);
     ASSERT_EQ(t.hmp1, 0);
     ASSERT_EQ(t.hmm0, 0);
@@ -122,7 +133,7 @@ static int test_hmclr_zeroes_all_hm(void)
     ASSERT_EQ(t.hmbl, 0);
     /* HMOVE after HMCLR must do nothing. */
     t.p0_pos = 40;
-    tia_write(&t, 0x2A, 0);
+    hmove_and_drain(&t);
     ASSERT_EQ(t.p0_pos, 40);
     return 0;
 }
@@ -154,14 +165,19 @@ static int test_hmove_comb_in_hblank(void)
 
 static int test_hmove_comb_mid_visible(void)
 {
+    /* HMOVE strobe is pipelined 6 colour clocks on real hardware, so a
+     * store at visible x=50 actually starts the comb at x=56. Pixels
+     * 50..55 show the background, 56..63 show the comb, then background
+     * resumes. */
     struct tia t;
     int i;
     std_setup(&t);
     for (i = 0; i < TIA_HBLANK_CLOCKS + 50; i++) tia_tick(&t);  /* hpos=118, visible x=50 */
     tia_write(&t, 0x2A, 0);
     for (; i < TIA_SCANLINE_CLOCKS; i++) tia_tick(&t);
-    if (expect_range(&t, 50, 57, BLACK(t),    "mid-visible comb")) return 1;
-    if (expect_range(&t, 58, 159, BG_COLOR(t), "after mid comb")) return 1;
+    if (expect_range(&t, 50, 54,  BG_COLOR(t), "pre-delay bg"))    return 1;
+    if (expect_range(&t, 55, 62,  BLACK(t),    "mid-visible comb")) return 1;
+    if (expect_range(&t, 63, 159, BG_COLOR(t), "after mid comb"))  return 1;
     return 0;
 }
 
@@ -188,7 +204,7 @@ static int test_hmove_moves_and_combs(void)
 static int test_serialize_hmove(void)
 {
     struct tia a, b;
-    uint8_t buf[128];
+    uint8_t buf[256];
     size_t sz = tia_serialize_size();
     ASSERT_TRUE(sz <= sizeof(buf));
     std_setup(&a);

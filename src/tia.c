@@ -175,10 +175,16 @@ void tia_set_palette_variant(struct tia *t, enum tia_palette_variant v)
 
 void tia_init(struct tia *t)
 {
-    int i;
+    int i, j;
     memset(t, 0, sizeof(*t));
     tia_set_region(t, TIA_REGION_NTSC);
     t->detected_region = TIA_REGION_NTSC;
+    /* Mark every delay-queue slot empty (reg==0xFF). memset-0 would be
+     * "slot contains a queued write of value 0 to register 0" — VSYNC —
+     * which would fire erroneously on the first frame. */
+    for (i = 0; i < 8; i++)
+        for (j = 0; j < 8; j++)
+            t->delay_slots[i][j].reg = 0xFF;
     /* 0xFFFF is the "not yet observed" sentinel. memset-0 would make the
      * VBLANK handler's "only set if still 0xFFFF" guard reject the first
      * latch, so the libretro layer would never see a real visible_start. */
@@ -234,6 +240,13 @@ void tia_reset(struct tia *t)
     t->vdelbl = false;
     t->bl_pos = 0; t->hmbl = 0;
     t->hmove_blank = 0;
+    {
+        int i, j;
+        for (i = 0; i < 8; i++)
+            for (j = 0; j < 8; j++)
+                t->delay_slots[i][j].reg = 0xFF;
+        t->delay_head = 0;
+    }
     memset(t->cx, 0, sizeof(t->cx));
     memset(&t->aud[0], 0, sizeof(t->aud[0]));
     memset(&t->aud[1], 0, sizeof(t->aud[1]));
@@ -543,8 +556,15 @@ static uint8_t pixel_color(struct tia *t, uint16_t x)
     return t->colubk;
 }
 
+/* Forward decl — defined in the write section below. */
+static void delay_tick(struct tia *t);
+
 void tia_tick(struct tia *t)
 {
+    /* Fire any register writes whose pipeline delay is now up. Happens
+     * at the top of the tick so the new values are visible to this
+     * tick's pixel-render code. */
+    delay_tick(t);
     /* Audio runs every color clock, agnostic of HBLANK/VBLANK/VSYNC. */
     t->audio_sum[0] += audio_actual_volume(t, 0);
     t->audio_sum[1] += audio_actual_volume(t, 1);
@@ -658,6 +678,102 @@ uint8_t tia_read(struct tia *t, uint16_t addr)
     return (uint8_t)(addr & 0xFF);
 }
 
+/* ============================================================
+ *   Delay queue — deferred register writes
+ *
+ * Real TIA latches every register write through a colour-clock pipeline
+ * before the new value reaches the renderer. We model this with an
+ * 8-slot ring buffer: a write with a delay of N is placed in the slot
+ * that will be drained N ticks from now. `delay_tick` runs at the top
+ * of every tia_tick, drains the current slot, then advances the head.
+ * ============================================================ */
+
+#define DELAY_SLOTS 8
+
+static void delay_push(struct tia *t, uint8_t reg, uint8_t val, int delay)
+{
+    /* `delay_head` points to the slot that will be drained on the NEXT
+     * tia_tick (delay_tick runs at tick start and then advances head),
+     * so an entry already sits one tick in the future by virtue of being
+     * in the queue. delay-1 gives the effective colour-clock count:
+     *   delay=1 → fires on the next tick
+     *   delay=2 → fires two ticks later, etc. */
+    int slot = (t->delay_head + delay - 1) & (DELAY_SLOTS - 1);
+    int i;
+    for (i = 0; i < 8; i++) {
+        if (t->delay_slots[slot][i].reg == reg) {
+            /* Same-slot overwrite: game stored the register again before
+             * the previous write fired. Real HW collapses these. */
+            t->delay_slots[slot][i].value = val;
+            return;
+        }
+        if (t->delay_slots[slot][i].reg == 0xFF) {
+            t->delay_slots[slot][i].reg = reg;
+            t->delay_slots[slot][i].value = val;
+            return;
+        }
+    }
+    /* All 8 entries for this slot used. Should not happen with real
+     * kernels; silently drop so we don't overrun the array. */
+}
+
+/* Commit a queued write at its firing time. Mirrors the immediate-apply
+ * branches in tia_write, including side effects (GRP0 write also shuffles
+ * GRP1 into the VDELP1 latch). */
+static void delay_apply(struct tia *t, uint8_t reg, uint8_t data)
+{
+    switch (reg) {
+    case 0x0B: t->refp0 = (data & 0x08) != 0; break;
+    case 0x0C: t->refp1 = (data & 0x08) != 0; break;
+    case 0x0D: t->pf0 = data; break;
+    case 0x0E: t->pf1 = data; break;
+    case 0x0F: t->pf2 = data; break;
+    case 0x1B: /* GRP0 — also latches GRP1 for VDELP1 */
+        t->grp0 = data;
+        t->grp1_latch = t->grp1;
+        break;
+    case 0x1C: /* GRP1 — also latches GRP0 and ENABL */
+        t->grp1 = data;
+        t->grp0_latch = t->grp0;
+        t->enabl_latch = t->enabl;
+        break;
+    case 0x1D: t->enam0 = (data & 0x02) != 0; break;
+    case 0x1E: t->enam1 = (data & 0x02) != 0; break;
+    case 0x1F: t->enabl = (data & 0x02) != 0; break;
+    case 0x20: t->hmp0 = data; break;
+    case 0x21: t->hmp1 = data; break;
+    case 0x22: t->hmm0 = data; break;
+    case 0x23: t->hmm1 = data; break;
+    case 0x24: t->hmbl = data; break;
+    case 0x2A: /* HMOVE — apply motion deltas, start the 8-clock comb */
+        t->p0_pos = (int16_t)((int)t->p0_pos - hm_decode(t->hmp0));
+        t->p1_pos = (int16_t)((int)t->p1_pos - hm_decode(t->hmp1));
+        t->m0_pos = (int16_t)((int)t->m0_pos - hm_decode(t->hmm0));
+        t->m1_pos = (int16_t)((int)t->m1_pos - hm_decode(t->hmm1));
+        t->bl_pos = (int16_t)((int)t->bl_pos - hm_decode(t->hmbl));
+        t->hmove_blank = 8;
+        break;
+    case 0x2B: /* HMCLR — zero all HM registers */
+        t->hmp0 = t->hmp1 = t->hmm0 = t->hmm1 = t->hmbl = 0;
+        break;
+    default: break;
+    }
+    (void)data;
+}
+
+static void delay_tick(struct tia *t)
+{
+    uint8_t head = t->delay_head;
+    int i;
+    for (i = 0; i < 8; i++) {
+        uint8_t reg = t->delay_slots[head][i].reg;
+        if (reg == 0xFF) continue;
+        delay_apply(t, reg, t->delay_slots[head][i].value);
+        t->delay_slots[head][i].reg = 0xFF;
+    }
+    t->delay_head = (uint8_t)((head + 1) & (DELAY_SLOTS - 1));
+}
+
 void tia_write(struct tia *t, uint16_t addr, uint8_t data)
 {
     switch (addr & 0x3F) {
@@ -730,11 +846,11 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
     case 0x08: t->colupf = data; break;
     case 0x09: t->colubk = data; break;
     case 0x0A: t->ctrlpf = data; break;
-    case 0x0B: t->refp0  = (data & 0x08) != 0; break;
-    case 0x0C: t->refp1  = (data & 0x08) != 0; break;
-    case 0x0D: t->pf0    = data; break;
-    case 0x0E: t->pf1    = data; break;
-    case 0x0F: t->pf2    = data; break;
+    case 0x0B: delay_push(t, 0x0B, data, 1); break; /* REFP0 — 1 clk */
+    case 0x0C: delay_push(t, 0x0C, data, 1); break; /* REFP1 — 1 clk */
+    case 0x0D: delay_push(t, 0x0D, data, 2); break; /* PF0 — 2 clk */
+    case 0x0E: delay_push(t, 0x0E, data, 2); break; /* PF1 — 2 clk */
+    case 0x0F: delay_push(t, 0x0F, data, 2); break; /* PF2 — 2 clk */
     case 0x10: /* RESP0 strobe */
         t->p0_pos = (int16_t)((int)t->hpos + 5 - TIA_HBLANK_CLOCKS);
         break;
@@ -750,23 +866,16 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
     case 0x14: /* RESBL strobe */
         t->bl_pos = (int16_t)((int)t->hpos + 4 - TIA_HBLANK_CLOCKS);
         break;
-    case 0x1B: /* GRP0 — writing also latches GRP1 for VDELP1 */
-        t->grp0 = data;
-        t->grp1_latch = t->grp1;
-        break;
-    case 0x1C: /* GRP1 — writing also latches GRP0 and ENABL */
-        t->grp1 = data;
-        t->grp0_latch = t->grp0;
-        t->enabl_latch = t->enabl;
-        break;
-    case 0x1D: t->enam0 = (data & 0x02) != 0; break;
-    case 0x1E: t->enam1 = (data & 0x02) != 0; break;
-    case 0x1F: t->enabl = (data & 0x02) != 0; break;
-    case 0x20: t->hmp0   = data; break;
-    case 0x21: t->hmp1   = data; break;
-    case 0x22: t->hmm0   = data; break;
-    case 0x23: t->hmm1   = data; break;
-    case 0x24: t->hmbl   = data; break;
+    case 0x1B: delay_push(t, 0x1B, data, 1); break; /* GRP0  — 1 clk (latches grp1) */
+    case 0x1C: delay_push(t, 0x1C, data, 1); break; /* GRP1  — 1 clk (latches grp0 + enabl) */
+    case 0x1D: delay_push(t, 0x1D, data, 1); break; /* ENAM0 — 1 clk */
+    case 0x1E: delay_push(t, 0x1E, data, 1); break; /* ENAM1 — 1 clk */
+    case 0x1F: delay_push(t, 0x1F, data, 1); break; /* ENABL — 1 clk */
+    case 0x20: delay_push(t, 0x20, data, 2); break; /* HMP0  — 2 clk */
+    case 0x21: delay_push(t, 0x21, data, 2); break; /* HMP1  — 2 clk */
+    case 0x22: delay_push(t, 0x22, data, 2); break; /* HMM0  — 2 clk */
+    case 0x23: delay_push(t, 0x23, data, 2); break; /* HMM1  — 2 clk */
+    case 0x24: delay_push(t, 0x24, data, 2); break; /* HMBL  — 2 clk */
     case 0x25: t->vdelp0 = (data & 0x01) != 0; break;
     case 0x26: t->vdelp1 = (data & 0x01) != 0; break;
     case 0x27: t->vdelbl = (data & 0x01) != 0; break;
@@ -778,17 +887,8 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
     case 0x18: t->aud[1].audf = data & 0x1F; break;
     case 0x19: t->aud[0].audv = data & 0x0F; break;
     case 0x1A: t->aud[1].audv = data & 0x0F; break;
-    case 0x2A: /* HMOVE strobe: apply motion deltas, begin 8-clock comb */
-        t->p0_pos = (int16_t)((int)t->p0_pos - hm_decode(t->hmp0));
-        t->p1_pos = (int16_t)((int)t->p1_pos - hm_decode(t->hmp1));
-        t->m0_pos = (int16_t)((int)t->m0_pos - hm_decode(t->hmm0));
-        t->m1_pos = (int16_t)((int)t->m1_pos - hm_decode(t->hmm1));
-        t->bl_pos = (int16_t)((int)t->bl_pos - hm_decode(t->hmbl));
-        t->hmove_blank = 8;
-        break;
-    case 0x2B: /* HMCLR strobe: zero all HM registers */
-        t->hmp0 = t->hmp1 = t->hmm0 = t->hmm1 = t->hmbl = 0;
-        break;
+    case 0x2A: delay_push(t, 0x2A, data, 6); break; /* HMOVE — 6 clk */
+    case 0x2B: delay_push(t, 0x2B, data, 2); break; /* HMCLR — 2 clk */
     case 0x2C: /* CXCLR strobe: clear all collision bits */
         memset(t->cx, 0, sizeof(t->cx));
         break;
@@ -805,8 +905,9 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
 size_t tia_serialize_size(void)
 {
     /* M3a/b(20) + player(13) + m/b(14) + hmove(1) + cx(8) + audio(26) +
-     * input(7) + paddle_state(16: 4*2 max + 4*2 cnt) = 105 */
-    return 20 + 13 + 14 + 1 + 8 + 26 + 7 + 16;
+     * input(7) + paddle_state(16: 4*2 max + 4*2 cnt) = 105
+     * + delay queue: 8 slots × 8 entries × 2 bytes + 1 head byte = 129. */
+    return 20 + 13 + 14 + 1 + 8 + 26 + 7 + 16 + 129;
 }
 
 void tia_serialize(const struct tia *t, void *buf)
@@ -907,6 +1008,16 @@ void tia_serialize(const struct tia *t, void *buf)
             for (i = 0; i < 4; i++) {
                 *q++ = (uint8_t)(t->paddle_charge_cnt[i] & 0xFF);
                 *q++ = (uint8_t)(t->paddle_charge_cnt[i] >> 8);
+            }
+            /* Delay queue: 8 slots × 8 entries × (reg, value) + head. */
+            {
+                int s, e;
+                for (s = 0; s < 8; s++)
+                    for (e = 0; e < 8; e++) {
+                        *q++ = t->delay_slots[s][e].reg;
+                        *q++ = t->delay_slots[s][e].value;
+                    }
+                *q++ = t->delay_head;
             }
         }
     }
@@ -1010,6 +1121,16 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
         for (i = 0; i < 4; i++) {
             t->paddle_charge_cnt[i] = (uint16_t)(ip[0] | ((uint16_t)ip[1] << 8));
             ip += 2;
+        }
+        /* Delay queue: 8 slots × 8 entries × (reg, value) + head. */
+        {
+            int s, e;
+            for (s = 0; s < 8; s++)
+                for (e = 0; e < 8; e++) {
+                    t->delay_slots[s][e].reg   = *ip++;
+                    t->delay_slots[s][e].value = *ip++;
+                }
+            t->delay_head = *ip++;
         }
     }
     return true;

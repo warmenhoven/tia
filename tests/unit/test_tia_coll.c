@@ -196,7 +196,7 @@ static int test_pfp_plus_score(void)
 static int test_serialize_collisions(void)
 {
     struct tia a, b;
-    uint8_t buf[128];
+    uint8_t buf[256];
     size_t sz = tia_serialize_size();
     ASSERT_TRUE(sz <= sizeof(buf));
     std_setup(&a);

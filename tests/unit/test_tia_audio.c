@@ -247,7 +247,7 @@ static int test_two_channels_sum_through_mix(void)
 static int test_serialize_audio(void)
 {
     struct tia a, b;
-    uint8_t buf[128];
+    uint8_t buf[256];
     int16_t s_a[32], s_b[32];
     size_t na, nb;
     size_t sz = tia_serialize_size();

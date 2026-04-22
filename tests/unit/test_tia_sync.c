@@ -177,7 +177,7 @@ static int test_colubk_mirror_addresses(void)
 static int test_serialize_roundtrip(void)
 {
     struct tia a, b;
-    uint8_t buf[128];
+    uint8_t buf[256];
     size_t sz = tia_serialize_size();
 
     ASSERT_TRUE(sz <= sizeof(buf));
@@ -204,7 +204,7 @@ static int test_serialize_roundtrip(void)
 static int test_deserialize_rejects_short_buffer(void)
 {
     struct tia t;
-    uint8_t buf[128];
+    uint8_t buf[256];
     tia_init(&t);
     ASSERT_TRUE(!tia_deserialize(&t, buf, tia_serialize_size() - 1));
     return 0;

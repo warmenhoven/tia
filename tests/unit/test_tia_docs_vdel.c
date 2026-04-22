@@ -122,9 +122,11 @@ static int test_grp1_write_latches_grp0(void)
 {
     struct tia t;
     setup(&t);
-    tia_write(&t, 0x1B, 0xAA);   /* GRP0 = 0xAA */
-    ASSERT_EQ(t.grp0_latch, 0);  /* not yet latched */
+    tia_write(&t, 0x1B, 0xAA);   /* GRP0 = 0xAA (1-clk pipeline) */
+    tia_tick(&t);                /* drain — GRP0 now live, grp1_latch set */
+    ASSERT_EQ(t.grp0_latch, 0);  /* grp0 latch not touched by GRP0 write */
     tia_write(&t, 0x1C, 0x00);   /* GRP1 write: latches grp0 */
+    tia_tick(&t);                /* drain */
     ASSERT_EQ(t.grp0_latch, 0xAA);
     return 0;
 }
@@ -139,13 +141,15 @@ static int test_grp1_write_latches_grp0_and_enabl(void)
 {
     struct tia t;
     setup(&t);
-    tia_write(&t, 0x1B, 0x55);   /* GRP0 = 0x55 */
-    tia_write(&t, 0x1F, 0x02);   /* ENABL = 1 */
+    tia_write(&t, 0x1B, 0x55);   /* GRP0 = 0x55 (1-clk pipeline) */
+    tia_write(&t, 0x1F, 0x02);   /* ENABL = 1 (1-clk pipeline) */
+    tia_tick(&t);                /* drain — GRP0 + ENABL now live */
     /* After GRP0 write: grp1_latch may have been updated (to current grp1=0),
      * but grp0_latch and enabl_latch should not have changed. */
     ASSERT_EQ(t.grp0_latch, 0);
     ASSERT_EQ(t.enabl_latch, 0);
     tia_write(&t, 0x1C, 0x00);   /* GRP1 write triggers both */
+    tia_tick(&t);
     ASSERT_EQ(t.grp0_latch, 0x55);
     ASSERT_EQ(t.enabl_latch, 1);
     return 0;

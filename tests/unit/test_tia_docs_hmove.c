@@ -38,15 +38,20 @@ static void setup(struct tia *t)
     tia_init(t);
 }
 
-/* Apply HMP0 = value, strobe HMOVE, assert p0_pos moved by -signed_motion.
+/* Apply HMP0 = value, strobe HMOVE, drain the delay queue, assert
+ * p0_pos moved by -signed_motion. HMP0 writes are delayed 2 clocks and
+ * HMOVE is delayed 6 clocks on real hardware, so the effect is visible
+ * only after 6 ticks from the HMOVE store.
  * Doc: SPG §HMxx - "Positive moves left." Left = smaller x = subtract. */
 static int motion_test(uint8_t hmp0, int expected_delta, const char *label)
 {
     struct tia t;
+    int k;
     setup(&t);
     t.p0_pos = 60;
     tia_write(&t, 0x20, hmp0);
     tia_write(&t, 0x2A, 0);        /* HMOVE */
+    for (k = 0; k < 6; k++) tia_tick(&t);
     if (t.p0_pos != (int16_t)(60 - expected_delta)) {
         fprintf(stderr, "%s: hmp0=%02X expected p0_pos=%d got %d\n",
                 label, hmp0, 60 - expected_delta, t.p0_pos);
@@ -84,10 +89,12 @@ T(test_hmp0_minus_8, 0x80, -8)
 static int test_hmp0_low_nibble_ignored(void)
 {
     struct tia t;
+    int k;
     setup(&t);
     t.p0_pos = 60;
     tia_write(&t, 0x20, 0xFF);       /* high nibble F (=-1), low nibble garbage */
     tia_write(&t, 0x2A, 0);
+    for (k = 0; k < 6; k++) tia_tick(&t);
     ASSERT_EQ(t.p0_pos, 61);         /* -1 → +1 position delta */
     return 0;
 }
@@ -100,6 +107,7 @@ static int test_hmp0_low_nibble_ignored(void)
 static int test_hmove_applies_all_five(void)
 {
     struct tia t;
+    int k;
     setup(&t);
     t.p0_pos = 60; t.p1_pos = 60; t.m0_pos = 60; t.m1_pos = 60; t.bl_pos = 60;
     tia_write(&t, 0x20, 0x10);       /* HMP0 +1 */
@@ -108,6 +116,7 @@ static int test_hmove_applies_all_five(void)
     tia_write(&t, 0x23, 0xF0);       /* HMM1 -1 */
     tia_write(&t, 0x24, 0xE0);       /* HMBL -2 */
     tia_write(&t, 0x2A, 0);
+    for (k = 0; k < 6; k++) tia_tick(&t);
     ASSERT_EQ(t.p0_pos, 59);
     ASSERT_EQ(t.p1_pos, 58);
     ASSERT_EQ(t.m0_pos, 57);
@@ -124,13 +133,15 @@ static int test_hmove_applies_all_five(void)
 static int test_hmclr_zeros_all_then_hmove_noop(void)
 {
     struct tia t;
+    int k;
     setup(&t);
     tia_write(&t, 0x20, 0x70);
     tia_write(&t, 0x21, 0x80);
     tia_write(&t, 0x22, 0x50);
     tia_write(&t, 0x23, 0xA0);
     tia_write(&t, 0x24, 0x30);
-    tia_write(&t, 0x2B, 0);          /* HMCLR */
+    tia_write(&t, 0x2B, 0);          /* HMCLR — 2-clk delay */
+    for (k = 0; k < 2; k++) tia_tick(&t);
     ASSERT_EQ(t.hmp0, 0);
     ASSERT_EQ(t.hmp1, 0);
     ASSERT_EQ(t.hmm0, 0);
@@ -138,6 +149,7 @@ static int test_hmclr_zeros_all_then_hmove_noop(void)
     ASSERT_EQ(t.hmbl, 0);
     t.p0_pos = 50; t.p1_pos = 50; t.m0_pos = 50; t.m1_pos = 50; t.bl_pos = 50;
     tia_write(&t, 0x2A, 0);          /* HMOVE after HMCLR: no motion */
+    for (k = 0; k < 6; k++) tia_tick(&t);
     ASSERT_EQ(t.p0_pos, 50);
     ASSERT_EQ(t.p1_pos, 50);
     ASSERT_EQ(t.m0_pos, 50);

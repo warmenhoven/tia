@@ -116,6 +116,21 @@ struct tia {
      * "HMOVE comb" when HMOVE is strobed during HBLANK. */
     uint8_t  hmove_blank;
 
+    /* Delay queue — deferred register writes. Real hardware pipelines TIA
+     * register writes through several colour-clock-latch stages before
+     * they take effect; games rely on this (e.g. new_year_2024's 6502
+     * kernel rewrites PF0/1/2 mid-scanline on the assumption the PF
+     * writes land 2 clocks after the store completes). We model it with
+     * a small ring buffer: `delay_slots[i][j]` holds entries scheduled
+     * to fire i clocks from `delay_head`. 8 slots covers HMOVE's 6-clock
+     * max delay; 8 entries per slot covers the worst-case burst without
+     * collisions. reg==0xFF marks an empty entry. */
+    struct {
+        uint8_t reg;
+        uint8_t value;
+    } delay_slots[8][8];
+    uint8_t  delay_head;           /* next slot to fire */
+
     /* Collision registers — bits 7 and 6 only; 0 bits unused.
      * cx[0]=CXM0P, [1]=CXM1P, [2]=CXP0FB, [3]=CXP1FB,
      * [4]=CXM0FB, [5]=CXM1FB, [6]=CXBLPF, [7]=CXPPMM. */

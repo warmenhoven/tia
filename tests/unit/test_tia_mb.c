@@ -273,7 +273,7 @@ static int test_ball_beats_bg_not_player(void)
 static int test_serialize_roundtrip_mb(void)
 {
     struct tia a, b;
-    uint8_t buf[128];
+    uint8_t buf[256];
     size_t sz = tia_serialize_size();
     ASSERT_TRUE(sz <= sizeof(buf));
 
