@@ -9,7 +9,7 @@ CSIM_DIR := ../oracle/csim
 
 BINS := run_tia_c
 
-.PHONY: all clean csim csim-clean
+.PHONY: all clean csim csim-clean oracle-roms oracle-test
 all: $(BINS)
 
 $(BINS): %: %.c $(CORE_SOURCES)
@@ -22,6 +22,15 @@ csim:
 
 csim-clean:
 	$(MAKE) -C $(CSIM_DIR) clean
+
+# Build the hand-assembled test ROMs used by run_oracle_suite.py.
+oracle-roms:
+	python3 build_test_roms.py
+
+# Run every test ROM through csim (gold) and our tia.c; report per-ROM
+# match percentages. Requires csim to be built (`make csim`) for speed.
+oracle-test: $(BINS) oracle-roms
+	python3 run_oracle_suite.py
 
 clean:
 	rm -f $(BINS)
