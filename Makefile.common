@@ -4,6 +4,7 @@ SOURCES_C := \
 	$(CORE_DIR)/src/cpu.c \
 	$(CORE_DIR)/src/riot.c \
 	$(CORE_DIR)/src/tia.c \
+	$(CORE_DIR)/src/palette.c \
 	$(CORE_DIR)/src/cart.c \
 	$(CORE_DIR)/src/bus.c \
 	$(CORE_DIR)/src/libretro.c

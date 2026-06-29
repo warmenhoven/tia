@@ -2,7 +2,7 @@ CC     ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -I../../src
 
 SRC_DIR      := ../../src
-CORE_SOURCES := $(SRC_DIR)/cpu.c $(SRC_DIR)/tia.c \
+CORE_SOURCES := $(SRC_DIR)/cpu.c $(SRC_DIR)/tia.c $(SRC_DIR)/palette.c \
                 $(SRC_DIR)/cart.c $(SRC_DIR)/riot.c
 
 CSIM_DIR := ../oracle/csim
