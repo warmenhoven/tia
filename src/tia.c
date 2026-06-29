@@ -102,6 +102,10 @@ void tia_reset(struct tia *t)
     t->vdelbl = false;
     t->bl_pos = 0; t->hmbl = 0;
     t->hmove_blank = 0;
+    t->hm_remaining[0] = t->hm_remaining[1] = t->hm_remaining[2] =
+        t->hm_remaining[3] = t->hm_remaining[4] = 0;
+    t->hmove_active = false;
+    t->hmove_ticks  = 0;
     {
         int i, j;
         for (i = 0; i < 8; i++)
@@ -427,6 +431,29 @@ void tia_tick(struct tia *t)
      * at the top of the tick so the new values are visible to this
      * tick's pixel-render code. */
     delay_tick(t);
+
+    /* Cycle-accurate HMOVE state machine.  On each clock within the
+     * motion window, emit at most one "extra" pixel-counter pulse per
+     * object whose pending count is non-zero, stepping it toward 0.
+     * A mid-window HMx write (handled in delay_apply) replaces the
+     * pending count with the new decoded motion — Cosmic Ark strobes
+     * HMOVE, then rewrites HMM0 partway through the window to inject
+     * fresh motion pulses on the missile's pixel counter, which
+     * produces the starfield.  Window is 24 CPU cycles = 72 colour
+     * clocks, matching Andrew Towers' TIA Hardware Notes. */
+    if (t->hmove_active) {
+        if      (t->hm_remaining[0] > 0) { t->p0_pos--; t->hm_remaining[0]--; }
+        else if (t->hm_remaining[0] < 0) { t->p0_pos++; t->hm_remaining[0]++; }
+        if      (t->hm_remaining[1] > 0) { t->p1_pos--; t->hm_remaining[1]--; }
+        else if (t->hm_remaining[1] < 0) { t->p1_pos++; t->hm_remaining[1]++; }
+        if      (t->hm_remaining[2] > 0) { t->m0_pos--; t->hm_remaining[2]--; }
+        else if (t->hm_remaining[2] < 0) { t->m0_pos++; t->hm_remaining[2]++; }
+        if      (t->hm_remaining[3] > 0) { t->m1_pos--; t->hm_remaining[3]--; }
+        else if (t->hm_remaining[3] < 0) { t->m1_pos++; t->hm_remaining[3]++; }
+        if      (t->hm_remaining[4] > 0) { t->bl_pos--; t->hm_remaining[4]--; }
+        else if (t->hm_remaining[4] < 0) { t->bl_pos++; t->hm_remaining[4]++; }
+        if (++t->hmove_ticks >= 24) t->hmove_active = false;
+    }
     /* Audio runs every color clock, agnostic of HBLANK/VBLANK/VSYNC. */
     t->audio_sum[0] += audio_actual_volume(t, 0);
     t->audio_sum[1] += audio_actual_volume(t, 1);
@@ -606,21 +633,39 @@ static void delay_apply(struct tia *t, uint8_t reg, uint8_t data)
     case 0x1D: t->enam0 = (data & 0x02) != 0; break;
     case 0x1E: t->enam1 = (data & 0x02) != 0; break;
     case 0x1F: t->enabl = (data & 0x02) != 0; break;
-    case 0x20: t->hmp0 = data; break;
-    case 0x21: t->hmp1 = data; break;
-    case 0x22: t->hmm0 = data; break;
-    case 0x23: t->hmm1 = data; break;
-    case 0x24: t->hmbl = data; break;
-    case 0x2A: /* HMOVE — apply motion deltas, start the 8-clock comb */
-        t->p0_pos = (int16_t)((int)t->p0_pos - hm_decode(t->hmp0));
-        t->p1_pos = (int16_t)((int)t->p1_pos - hm_decode(t->hmp1));
-        t->m0_pos = (int16_t)((int)t->m0_pos - hm_decode(t->hmm0));
-        t->m1_pos = (int16_t)((int)t->m1_pos - hm_decode(t->hmm1));
-        t->bl_pos = (int16_t)((int)t->bl_pos - hm_decode(t->hmbl));
-        t->hmove_blank = 8;
+    /* HMx writes: always land in the register.  If HMOVE is currently
+     * mid-window, the new value ALSO replaces the pending pulse count,
+     * so additional pulses fire through the rest of the window based
+     * on the new motion — Cosmic Ark's starfield trick. */
+    case 0x20: t->hmp0 = data;
+               if (t->hmove_active) t->hm_remaining[0] = (int8_t)hm_decode(data);
+               break;
+    case 0x21: t->hmp1 = data;
+               if (t->hmove_active) t->hm_remaining[1] = (int8_t)hm_decode(data);
+               break;
+    case 0x22: t->hmm0 = data;
+               if (t->hmove_active) t->hm_remaining[2] = (int8_t)hm_decode(data);
+               break;
+    case 0x23: t->hmm1 = data;
+               if (t->hmove_active) t->hm_remaining[3] = (int8_t)hm_decode(data);
+               break;
+    case 0x24: t->hmbl = data;
+               if (t->hmove_active) t->hm_remaining[4] = (int8_t)hm_decode(data);
+               break;
+    case 0x2A: /* HMOVE — start the cycle-accurate motion window */
+        t->hm_remaining[0] = (int8_t)hm_decode(t->hmp0);
+        t->hm_remaining[1] = (int8_t)hm_decode(t->hmp1);
+        t->hm_remaining[2] = (int8_t)hm_decode(t->hmm0);
+        t->hm_remaining[3] = (int8_t)hm_decode(t->hmm1);
+        t->hm_remaining[4] = (int8_t)hm_decode(t->hmbl);
+        t->hmove_active    = true;
+        t->hmove_ticks     = 0;
+        t->hmove_blank     = 8;     /* visible 8-clock comb */
         break;
-    case 0x2B: /* HMCLR — zero all HM registers */
+    case 0x2B: /* HMCLR — zero all HM registers AND any pulses in flight */
         t->hmp0 = t->hmp1 = t->hmm0 = t->hmm1 = t->hmbl = 0;
+        t->hm_remaining[0] = t->hm_remaining[1] = t->hm_remaining[2] =
+            t->hm_remaining[3] = t->hm_remaining[4] = 0;
         break;
     default: break;
     }
@@ -772,8 +817,9 @@ size_t tia_serialize_size(void)
 {
     /* M3a/b(20) + player(13) + m/b(14) + hmove(1) + cx(8) + audio(26) +
      * input(7) + paddle_state(16: 4*2 max + 4*2 cnt) = 105
-     * + delay queue: 8 slots × 8 entries × 2 bytes + 1 head byte = 129. */
-    return 20 + 13 + 14 + 1 + 8 + 26 + 7 + 16 + 129;
+     * + delay queue: 8 slots × 8 entries × 2 bytes + 1 head byte = 129.
+     * + cycle-accurate hmove tail: 5 pending + active flag + ticks = 7. */
+    return 20 + 13 + 14 + 1 + 8 + 26 + 7 + 16 + 129 + 7;
 }
 
 void tia_serialize(const struct tia *t, void *buf)
@@ -885,6 +931,11 @@ void tia_serialize(const struct tia *t, void *buf)
                     }
                 *q++ = t->delay_head;
             }
+            /* Cycle-accurate HMOVE state (7 bytes): 5× signed pending
+             * pulses + active flag + ticks elapsed. */
+            for (i = 0; i < 5; i++) *q++ = (uint8_t)t->hm_remaining[i];
+            *q++ = (uint8_t)(t->hmove_active ? 1 : 0);
+            *q++ = t->hmove_ticks;
         }
     }
 }
@@ -998,6 +1049,10 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
                 }
             t->delay_head = *ip++;
         }
+        /* Cycle-accurate HMOVE state (7 bytes). */
+        for (i = 0; i < 5; i++) t->hm_remaining[i] = (int8_t)*ip++;
+        t->hmove_active = *ip++ != 0;
+        t->hmove_ticks  = *ip++;
     }
     return true;
 }

@@ -122,6 +122,29 @@ struct tia {
      * "HMOVE comb" when HMOVE is strobed during HBLANK. */
     uint8_t  hmove_blank;
 
+    /* Cycle-accurate HMOVE state machine.  Real TIA hardware applies
+     * motion gradually over a ~24-CPU-cycle window by emitting "extra
+     * clock" pulses into each object's pixel counter; rewriting HMx
+     * mid-window takes effect on the remaining pulses, which is what
+     * Cosmic Ark relies on to paint its starfield.  We model this as:
+     *
+     *   hm_remaining[i] = signed pulses still to emit for object i
+     *                     (P0=0, P1=1, M0=2, M1=3, BL=4).
+     *                     Positive = left-going pulses, negative =
+     *                     right-going.  Each tick, if non-zero, one
+     *                     pulse fires and the count steps toward 0.
+     *   hmove_active    = true while the window is open.
+     *   hmove_ticks     = colour clocks elapsed since HMOVE latched
+     *                     (0..HMOVE_WINDOW_CLOCKS-1).
+     *
+     * An HMx register write during the window writes `hm_remaining`
+     * with the new decoded motion, overriding whatever pulses were left
+     * from the original value.  HMCLR zeroes both HMx and the pending
+     * counts. */
+    int8_t   hm_remaining[5];
+    bool     hmove_active;
+    uint8_t  hmove_ticks;
+
     /* Delay queue — deferred register writes. Real hardware pipelines TIA
      * register writes through several colour-clock-latch stages before
      * they take effect; games rely on this (e.g. new_year_2024's 6502

@@ -38,10 +38,10 @@ static void setup(struct tia *t)
     tia_init(t);
 }
 
-/* Apply HMP0 = value, strobe HMOVE, drain the delay queue, assert
- * p0_pos moved by -signed_motion. HMP0 writes are delayed 2 clocks and
- * HMOVE is delayed 6 clocks on real hardware, so the effect is visible
- * only after 6 ticks from the HMOVE store.
+/* Apply HMP0 = value, strobe HMOVE, drain the pipelined delay AND the
+ * cycle-accurate motion window, assert p0_pos moved by -signed_motion.
+ * HMOVE is delayed 6 colour clocks before the state machine latches HMx
+ * values and opens the 24-clock motion window; 30 ticks covers both.
  * Doc: SPG §HMxx - "Positive moves left." Left = smaller x = subtract. */
 static int motion_test(uint8_t hmp0, int expected_delta, const char *label)
 {
@@ -51,7 +51,7 @@ static int motion_test(uint8_t hmp0, int expected_delta, const char *label)
     t.p0_pos = 60;
     tia_write(&t, 0x20, hmp0);
     tia_write(&t, 0x2A, 0);        /* HMOVE */
-    for (k = 0; k < 6; k++) tia_tick(&t);
+    for (k = 0; k < 30; k++) tia_tick(&t);
     if (t.p0_pos != (int16_t)(60 - expected_delta)) {
         fprintf(stderr, "%s: hmp0=%02X expected p0_pos=%d got %d\n",
                 label, hmp0, 60 - expected_delta, t.p0_pos);
@@ -94,7 +94,7 @@ static int test_hmp0_low_nibble_ignored(void)
     t.p0_pos = 60;
     tia_write(&t, 0x20, 0xFF);       /* high nibble F (=-1), low nibble garbage */
     tia_write(&t, 0x2A, 0);
-    for (k = 0; k < 6; k++) tia_tick(&t);
+    for (k = 0; k < 30; k++) tia_tick(&t);
     ASSERT_EQ(t.p0_pos, 61);         /* -1 → +1 position delta */
     return 0;
 }
@@ -116,7 +116,7 @@ static int test_hmove_applies_all_five(void)
     tia_write(&t, 0x23, 0xF0);       /* HMM1 -1 */
     tia_write(&t, 0x24, 0xE0);       /* HMBL -2 */
     tia_write(&t, 0x2A, 0);
-    for (k = 0; k < 6; k++) tia_tick(&t);
+    for (k = 0; k < 30; k++) tia_tick(&t);
     ASSERT_EQ(t.p0_pos, 59);
     ASSERT_EQ(t.p1_pos, 58);
     ASSERT_EQ(t.m0_pos, 57);
@@ -149,7 +149,7 @@ static int test_hmclr_zeros_all_then_hmove_noop(void)
     ASSERT_EQ(t.hmbl, 0);
     t.p0_pos = 50; t.p1_pos = 50; t.m0_pos = 50; t.m1_pos = 50; t.bl_pos = 50;
     tia_write(&t, 0x2A, 0);          /* HMOVE after HMCLR: no motion */
-    for (k = 0; k < 6; k++) tia_tick(&t);
+    for (k = 0; k < 30; k++) tia_tick(&t);
     ASSERT_EQ(t.p0_pos, 50);
     ASSERT_EQ(t.p1_pos, 50);
     ASSERT_EQ(t.m0_pos, 50);

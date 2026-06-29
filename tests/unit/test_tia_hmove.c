@@ -10,13 +10,17 @@ static void full_scanline(struct tia *t)
     for (i = 0; i < TIA_SCANLINE_CLOCKS; i++) tia_tick(t);
 }
 
-/* Issue an HMOVE strobe and drain the 6-clock pipeline so the motion
- * deltas are applied to the sprite positions before the caller asserts. */
+/* Issue an HMOVE strobe and let the full cycle-accurate motion window
+ * close before the caller asserts.  The strobe itself is pipelined 6
+ * colour clocks (delay queue), and the HMOVE motion state machine then
+ * runs for another 24 colour clocks emitting pulses.  Draining 30
+ * clocks is enough for any HMx magnitude and leaves the state machine
+ * inactive so subsequent writes behave normally. */
 static void hmove_and_drain(struct tia *t)
 {
     int i;
     tia_write(t, 0x2A, 0);
-    for (i = 0; i < 6; i++) tia_tick(t);
+    for (i = 0; i < 30; i++) tia_tick(t);
 }
 
 static int expect_range(const struct tia *t, uint16_t x_lo, uint16_t x_hi,
