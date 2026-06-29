@@ -210,7 +210,7 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
             { "b", "B" },
             { NULL, NULL }
         },
-        "b"
+        "a"
     },
     {
         "tia_right_diff", "Right Difficulty (initial)", NULL,
@@ -222,7 +222,7 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
             { "b", "B" },
             { NULL, NULL }
         },
-        "b"
+        "a"
     },
     {
         "tia_color", "TV Type (initial)", NULL,
@@ -909,8 +909,8 @@ static void poll_inputs(void)
     if (js(0, RETRO_DEVICE_ID_JOYPAD_START))  pb &= (uint8_t)~0x01;
     if (js(0, RETRO_DEVICE_ID_JOYPAD_SELECT)) pb &= (uint8_t)~0x02;
     if (!sys.sw_color)       pb &= (uint8_t)~0x08;
-    if (sys.sw_left_diff_a)  pb |= 0x40;
-    if (sys.sw_right_diff_a) pb |= 0x80;
+    if (!sys.sw_left_diff_a)  pb |= 0x40;
+    if (!sys.sw_right_diff_a) pb |= 0x80;
     sys.riot.pb_in = pb;
 
     /* Read retropad → keypad button state for any keypad-mode port. The

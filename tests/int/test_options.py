@@ -85,12 +85,19 @@ def _swchb_bit_state(rom, options, n_frames=6):
         return _center(s.video.screenshot())
 
 
-def test_left_diff_a_overrides_default(core_path):
-    """Default is B; forcing A via the option should paint a different COLUBK."""
+def test_left_diff_b_overrides_default(core_path):
+    """Default switch position is A (matches the rest-position
+    convention of the other SWCHB bits).  Forcing B via the option
+    should paint a different COLUBK.  Note: A and B are just two
+    switch positions — what they mean is game-specific (Adventure
+    treats A as harder, Combat goes the other way, several games
+    use the switches for level select), so no good/bad framing
+    here, just a binary state."""
     rom = _build_swchb_echo_rom()
-    default_b = _swchb_bit_state(rom, {})
-    forced_a  = _swchb_bit_state(rom, {"tia_left_diff": "a"})
-    assert default_b != forced_a, f"left-diff B default vs A override should paint different COLUBK, both got {default_b}"
+    default_a = _swchb_bit_state(rom, {})
+    forced_b  = _swchb_bit_state(rom, {"tia_left_diff": "b"})
+    assert default_a != forced_b, \
+        f"left-diff A default vs B override should paint different COLUBK, both got {default_a}"
 
 
 def test_right_diff_b_overrides_default(core_path):
