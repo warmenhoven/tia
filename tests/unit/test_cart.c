@@ -255,8 +255,11 @@ static int test_3f_detection_and_fixed_upper(void)
         int bank = i / 2048;
         rom[i] = (uint8_t)((bank << 6) | (i & 0x3F));
     }
-    /* Plant a 3F signature (STA $3F) */
+    /* Plant a 3F signature (STA $3F) twice — real Tigervision carts switch
+     * banks repeatedly, and a lone $85 $3F is a common zero-page store, so
+     * detection requires >= 2 occurrences. */
     rom[0x200] = 0x85; rom[0x201] = 0x3F;
+    rom[0x204] = 0x85; rom[0x205] = 0x3F;
 
     ASSERT_TRUE(cart_load(&c, rom, 8192));
     ASSERT_EQ(c.mapper, CART_MAPPER_3F);
@@ -279,6 +282,7 @@ static int test_3f_bank_switch_via_snoop(void)
         rom[i] = (uint8_t)((bank << 6) | (i & 0x3F));
     }
     rom[0x200] = 0x85; rom[0x201] = 0x3F;
+    rom[0x204] = 0x85; rom[0x205] = 0x3F;
     cart_load(&c, rom, 8192);
 
     /* Writing a bank number to $00-$3F (from bus level) switches lower 2K */

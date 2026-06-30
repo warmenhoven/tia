@@ -17,71 +17,85 @@ static int find_bytes(const uint8_t *rom, size_t size,
     return 0;
 }
 
-/* Signature-based 8K mapper detection. Combines three signals:
- *   (a) direct-addressing hotspot accesses in the code (strong positive)
- *   (b) F8 hotspot writes (strong positive for F8)
- *   (c) reset-vector location (weak positive; used only if nothing else fires)
- *
- * Games like Gyruss access E0 slots only through indirect addressing, so
- * (a) alone misses them; the reset-vector check rescues those. F8 games
- * occasionally place their entry point in $FC00-$FFFF too, so we only apply
- * the reset-vector heuristic when no explicit signature was found. */
+/* Count non-overlapping occurrences of `pat`, stopping once `minhits` is
+ * reached.  Returns the number seen (>= minhits means "found enough"). */
+static int count_bytes(const uint8_t *rom, size_t size,
+                       const uint8_t *pat, size_t pat_len, int minhits)
+{
+    int hits = 0;
+    size_t i = 0;
+    if (pat_len > size) return 0;
+    while (i + pat_len <= size) {
+        if (memcmp(rom + i, pat, pat_len) == 0) {
+            if (++hits >= minhits) return hits;
+            i += pat_len;                 /* skip past this match window */
+        } else {
+            i++;
+        }
+    }
+    return hits;
+}
+
+/* 8K mapper detection via a curated set of known instruction signatures. 8K can
+ * be F8 / E0 (Parker Bros) / 3F (Tigervision) / FE (Activision) — plus
+ * UA/SC/3E, not handled here. Address-range guessing produces false positives
+ * (a data read near the ROM top looks like an E0 slot-select; one stray $xFF8
+ * byte looks like F8), so we match the exact instruction signatures real games
+ * use — operand high byte included, since the hotspots are mirrored and games
+ * usually write the high $FFxx form — and default to F8. */
 static uint8_t detect_8k_mapper(const uint8_t *rom, size_t size)
 {
-    static const uint8_t e0_a[3] = { 0x8D, 0xE0, 0x1F };  /* STA $1FE0 */
-    static const uint8_t e0_b[3] = { 0xAD, 0xE0, 0x1F };  /* LDA $1FE0 */
-    static const uint8_t e0_c[3] = { 0x8D, 0xE8, 0x1F };  /* STA $1FE8 */
-    static const uint8_t e0_d[3] = { 0xAD, 0xF0, 0x1F };  /* LDA $1FF0 */
+    /* "Looks like F8": STA $1FF9 (or its $FFF9 mirror) at least twice — a
+     * real F8 game switches to bank 1 more than once.  Guards the FE check
+     * so an F8 game with an FE-ish byte run isn't mis-called FE. */
+    static const uint8_t f8_lo[3] = { 0x8D, 0xF9, 0x1F };  /* STA $1FF9 */
+    static const uint8_t f8_hi[3] = { 0x8D, 0xF9, 0xFF };  /* STA $FFF9 */
+    int looks_f8 = count_bytes(rom, size, f8_lo, 3, 2) >= 2
+                || count_bytes(rom, size, f8_hi, 3, 2) >= 2;
 
-    static const uint8_t f8_a[3] = { 0x8D, 0xF8, 0x1F };  /* STA $1FF8 */
-    static const uint8_t f8_b[3] = { 0x8D, 0xF9, 0x1F };  /* STA $1FF9 */
-    static const uint8_t f8_c[3] = { 0xAD, 0xF8, 0x1F };  /* LDA $1FF8 */
-    static const uint8_t f8_d[3] = { 0xAD, 0xF9, 0x1F };  /* LDA $1FF9 */
-
-    static const uint8_t f3_a[2] = { 0x85, 0x3F };        /* STA $3F */
-    static const uint8_t f3_b[2] = { 0x86, 0x3F };        /* STX $3F */
-    static const uint8_t f3_c[2] = { 0x84, 0x3F };        /* STY $3F */
-
-    int have_e0 = find_bytes(rom, size, e0_a, 3)
-               || find_bytes(rom, size, e0_b, 3)
-               || find_bytes(rom, size, e0_c, 3)
-               || find_bytes(rom, size, e0_d, 3);
-    int have_f8 = find_bytes(rom, size, f8_a, 3)
-               || find_bytes(rom, size, f8_b, 3)
-               || find_bytes(rom, size, f8_c, 3)
-               || find_bytes(rom, size, f8_d, 3);
-    int have_3f = find_bytes(rom, size, f3_a, 2)
-               || find_bytes(rom, size, f3_b, 2)
-               || find_bytes(rom, size, f3_c, 2);
-
-    /* FE (Activision): detected by specific 5-byte signatures. These
-     * patterns are JSR sequences that trigger the $01FE hotspot during
-     * stack operations. Attributed to the MESS project. */
+    /* E0 (Parker Bros): curated signatures, including $FFxx/$5Fxx/$BFxx
+     * mirror forms and a NOP-absolute slot poke. */
     {
-        static const uint8_t fe_a[5] = { 0x20, 0x00, 0xD0, 0xC6, 0xC5 }; /* Decathlon */
-        static const uint8_t fe_b[5] = { 0x20, 0xC3, 0xF8, 0xA5, 0x82 }; /* Robot Tank */
-        static const uint8_t fe_c[5] = { 0xD0, 0xFB, 0x20, 0x73, 0xFE }; /* Space Shuttle */
-        static const uint8_t fe_d[5] = { 0xD0, 0xFB, 0x20, 0x68, 0xFE }; /* Space Shuttle SECAM */
-        static const uint8_t fe_e[5] = { 0x20, 0x00, 0xF0, 0x84, 0xD6 }; /* Thwocker */
-        int have_fe = find_bytes(rom, size, fe_a, 5)
-                   || find_bytes(rom, size, fe_b, 5)
-                   || find_bytes(rom, size, fe_c, 5)
-                   || find_bytes(rom, size, fe_d, 5)
-                   || find_bytes(rom, size, fe_e, 5);
-        if (have_fe && !have_f8) return CART_MAPPER_FE;
+        static const uint8_t e0[][3] = {
+            { 0x8D, 0xE0, 0x1F },  /* STA $1FE0 */
+            { 0x8D, 0xE0, 0x5F },  /* STA $5FE0 */
+            { 0x8D, 0xE9, 0xFF },  /* STA $FFE9 */
+            { 0x0C, 0xE0, 0x1F },  /* NOP $1FE0 */
+            { 0xAD, 0xE0, 0x1F },  /* LDA $1FE0 */
+            { 0xAD, 0xE9, 0xFF },  /* LDA $FFE9 */
+            { 0xAD, 0xED, 0xFF },  /* LDA $FFED */
+            { 0xAD, 0xF3, 0xBF }   /* LDA $BFF3 */
+        };
+        size_t i;
+        for (i = 0; i < sizeof e0 / sizeof e0[0]; i++)
+            if (find_bytes(rom, size, e0[i], 3)) return CART_MAPPER_E0;
     }
 
-    if (have_e0 && !have_f8) return CART_MAPPER_E0;
-    if (have_f8)             return CART_MAPPER_F8;
-    if (have_3f)             return CART_MAPPER_3F;
-
-    /* Fallback: reset vector at $FFFC lives at ROM offset (size-4). On E0
-     * carts it must point into the fixed slot 3 ($FC00-$FFFF) because that's
-     * the only region guaranteed mapped at boot. F8 carts rarely land there. */
+    /* 3F (Tigervision): STA $3F, required at least twice (a single $85 $3F
+     * store to a zero-page temp is a common coincidence). */
     {
-        uint16_t reset = (uint16_t)(rom[size - 4] | (rom[size - 3] << 8));
-        if (reset >= 0xFC00) return CART_MAPPER_E0;
+        static const uint8_t f3[2] = { 0x85, 0x3F };  /* STA $3F */
+        if (count_bytes(rom, size, f3, 2, 2) >= 2) return CART_MAPPER_3F;
     }
+
+    /* FE (Activision): JSR-through-stack signatures — only when the ROM
+     * doesn't already look like F8. */
+    if (!looks_f8) {
+        static const uint8_t fe[][5] = {
+            { 0x20, 0x00, 0xD0, 0xC6, 0xC5 }, /* Decathlon           */
+            { 0x20, 0xC3, 0xF8, 0xA5, 0x82 }, /* Robot Tank          */
+            { 0xD0, 0xFB, 0x20, 0x73, 0xFE }, /* Space Shuttle       */
+            { 0xD0, 0xFB, 0x20, 0x68, 0xFE }, /* Space Shuttle SECAM */
+            { 0x20, 0x00, 0xF0, 0x84, 0xD6 }  /* Thwocker            */
+        };
+        size_t i;
+        for (i = 0; i < sizeof fe / sizeof fe[0]; i++)
+            if (find_bytes(rom, size, fe[i], 5)) return CART_MAPPER_FE;
+    }
+
+    /* Default F8.  No reset-vector guessing: the curated E0 signatures above
+     * already catch the indirect-access E0 games (Gyruss etc.) the old
+     * heuristic rescued, without the false positives it caused. */
     return CART_MAPPER_F8;
 }
 
