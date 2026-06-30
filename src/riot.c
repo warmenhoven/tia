@@ -19,30 +19,32 @@
 
 void riot_init(struct riot *r)
 {
-    int i;
     memset(r, 0, sizeof(*r));
     r->pa_in = 0xFF;
     r->pb_in = 0xFF;
-    /* Power-on convention: prescaler in T1024T mode, timer with a non-zero
-     * "random-ish" value. Real hardware's power-on state is undefined; this
-     * approximation keeps timer-sensitive games from instantly underflowing. */
+    /* Power-on timer: T1024T prescaler with a fixed non-zero value. The real
+     * chip's power-on timer state is undefined; any non-zero value works
+     * (games re-arm the timer before relying on it) and a fixed one keeps the
+     * boot deterministic. RAM is left zeroed here — the deterministic base the
+     * comparison harness and unit tests use; the libretro layer calls
+     * riot_randomize_ram() for the "hardware-like" cold-boot mode. */
     r->prescaler_div = 1024;
     r->timer = 0x77;
     r->pa7_last = r->pa_in & 0x80;
-    /* Real 6532 RAM is undefined at cold boot — the cells settle into a
-     * noisy pattern of 1s and 0s, not a clean zero. A handful of games
-     * rely on this: Yars' Revenge famously uses uninitialised RAM as the
-     * seed for its "Neutral Zone" static effect and renders a near-blank
-     * title without it. We use a deterministic pseudo-random pattern
-     * rather than true randomness so that two cold boots of the same
-     * ROM produce identical output (stable screenshots, reproducible
-     * unit tests, replayable input recordings). */
+}
+
+void riot_randomize_ram(struct riot *r, uint32_t seed)
+{
+    /* Real 6532 RAM powers up in an indeterminate, mostly-noisy state. We
+     * model that with an xorshift fill from a per-boot seed so each cold boot
+     * differs the way hardware does; a fixed seed yields a reproducible fill. */
+    uint32_t s = seed ? seed : 1u;   /* xorshift32 must not start at zero */
+    int i;
     for (i = 0; i < 128; i++) {
-        /* Small xorshift mix; constants chosen to spread all 256 values
-         * across the 128 bytes with no long zero stretches. */
-        unsigned x = (unsigned)(i * 0x9E + 0x5B);
-        x ^= x >> 3;
-        r->ram[i] = (uint8_t)(x & 0xFF);
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        r->ram[i] = (uint8_t)(s >> 24);
     }
 }
 
@@ -147,10 +149,10 @@ void riot_write(struct riot *r, uint16_t addr, uint8_t data)
     if (!(addr & A2)) {
         switch (addr & (A1 | A0)) {
         case 0:  r->pa_out = data;
-            if (r->pa_changed) r->pa_changed(r->pa_changed_ctx);
+            if (r->pa_changed) r->pa_changed();
             break;
         case A0: r->pa_ddr = data;
-            if (r->pa_changed) r->pa_changed(r->pa_changed_ctx);
+            if (r->pa_changed) r->pa_changed();
             break;
         case A1: r->pb_out = data; break;
         default: r->pb_ddr = data; break;

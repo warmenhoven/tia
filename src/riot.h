@@ -42,11 +42,14 @@ struct riot {
      * effective pin state seen by a connected controller may have changed).
      * Used by the keypad controller to rescan the row drivers on each
      * SWCHA / SWACNT write. NULL = no callback. */
-    void   (*pa_changed)(void *ctx);
-    void    *pa_changed_ctx;
+    void   (*pa_changed)(void);
 };
 
 void riot_init(struct riot *r);
+/* Fill the 128 bytes of RIOT RAM with a seed-deterministic pseudo-random
+ * pattern (the "hardware-like" cold-boot mode). Called by the libretro layer
+ * after riot_init when power-on RAM should be noisy rather than zeroed. */
+void riot_randomize_ram(struct riot *r, uint32_t seed);
 void riot_reset(struct riot *r);
 void riot_tick(struct riot *r);
 

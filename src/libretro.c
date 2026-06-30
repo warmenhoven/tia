@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "compat.h"
 #include "libretro.h"
@@ -85,6 +86,10 @@ static struct {
     bool        sw_color;        /* true = color, false = B&W */
     bool        sw_left_diff_a;  /* true = A, false = B */
     bool        sw_right_diff_a;
+    /* Power-on RAM mode (tia_ram_init). true = fill with fresh per-boot
+     * pseudo-random noise (hardware-like); false = zeroed (matches the
+     * reference emulators, deterministic). Read once at load. */
+    bool        ram_init_hardware;
     /* Previous-frame button state for edge detection on the six
      * switch-setting buttons (one bit per JOYPAD_L..R3). */
     uint8_t     sw_prev;
@@ -237,6 +242,22 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
         "color"
     },
     {
+        "tia_ram_init", "Power-on RAM", NULL,
+        "How the console's 128 bytes of RAM come up at cold boot. "
+        "\"Hardware-like\" fills it with fresh pseudo-random noise on every "
+        "boot, like a real 2600 — a few games read uninitialised RAM, so "
+        "their colours or contents vary from boot to boot. \"Zeroed\" clears "
+        "it to match reference emulators for deterministic, directly "
+        "comparable output.",
+        NULL, NULL,
+        {
+            { "hardware", "Hardware-like" },
+            { "zero",     "Zeroed" },
+            { NULL, NULL }
+        },
+        "hardware"
+    },
+    {
         "tia_crop_hoverscan", "Crop horizontal overscan", NULL,
         "Trim 8 pixels from each side of the visible area, removing the "
         "leftmost and rightmost columns most 2600 games don't draw into. "
@@ -302,6 +323,7 @@ static const struct retro_variable core_options_v0[] = {
     { "tia_left_diff",       "Left Difficulty (initial); b|a" },
     { "tia_right_diff",      "Right Difficulty (initial); b|a" },
     { "tia_color",           "TV Type (initial); color|bw" },
+    { "tia_ram_init",        "Power-on RAM; hardware|zero" },
     { "tia_crop_hoverscan",  "Crop horizontal overscan; off|on" },
     { "tia_crop_voverscan",  "Crop vertical overscan (rows); 0|2|4|6|8|10|12|14|16|18|20|22|24" },
     { "tia_paddle_sensitivity", "Paddle sensitivity; 1|2|3|4|5|6|7|8|9|10" },
@@ -415,6 +437,21 @@ static bool get_bool_option(const char *key, const char *true_val)
     return strcmp(var.value, true_val) == 0;
 }
 
+/* Per-cold-boot entropy seed for the hardware-like RAM init. time() varies
+ * between launches; a per-call counter de-dupes boots inside the same second
+ * (rapid reload). Only needs to differ boot to boot, not be crypto-grade. */
+static uint32_t riot_entropy_seed(void)
+{
+    static uint32_t counter = 0u;
+    counter++;
+    /* time() differs across launches; counter de-dupes boots within one
+     * loaded core; the address term (ASLR) de-dupes same-second boots even
+     * when a fresh process resets counter. */
+    return (uint32_t)time(NULL) * 2654435761u
+         + counter * 40503u
+         + (uint32_t)(size_t)(void *)&counter;
+}
+
 /* Parse the paddle tuning options and apply them. No AV refresh needed. */
 static void apply_paddle_options(void)
 {
@@ -509,6 +546,9 @@ void retro_init(void)
     /* Paddle tuning defaults: neutral sensitivity (5), no deadzone. */
     sys.paddle_sensitivity = 5;
     sys.paddle_deadzone_pct = 0;
+    /* Default power-on RAM: hardware-like (per-boot random). The comparison
+     * harness and tests opt into "zero" via the tia_ram_init core option. */
+    sys.ram_init_hardware = true;
 }
 void retro_deinit(void) { }
 
@@ -767,7 +807,7 @@ static const uint8_t kp_row[12] = {
  * output state + keypad button state. Called from riot_write's pa_changed
  * callback whenever the CPU strobes SWCHA or changes its DDR, and also
  * directly from poll_inputs (once per frame) to seed the initial state. */
-static void keypad_update(void *ctx)
+static void keypad_update(void)
 {
     unsigned p;
     uint8_t  pa_effective;
@@ -775,7 +815,6 @@ static void keypad_update(void *ctx)
      * bits with DDR=input float high (1). */
     pa_effective = (uint8_t)((sys.riot.pa_out & sys.riot.pa_ddr)
                  | (uint8_t)~sys.riot.pa_ddr);
-    (void)ctx;
 
     for (p = 0; p < 2; p++) {
         uint8_t  col_inpt[3];   /* col0, col1, col2: default HIGH (not pressed) */
@@ -954,7 +993,7 @@ static void poll_inputs(void)
     }
 
     /* Compute keypad INPT bits with the freshly-polled button state. */
-    keypad_update(NULL);
+    keypad_update();
 
     /* INPT0-3: paddle potentiometer capacitor dumps. Each port contributes
      * two paddles (A = LEFT stick X, B = RIGHT stick X) when in paddle
@@ -1125,10 +1164,12 @@ bool retro_load_game(const struct retro_game_info *info)
     apply_crop_options();
     apply_switch_initial_options();
     apply_paddle_options();
+    sys.ram_init_hardware = !get_bool_option("tia_ram_init", "zero");
     tia_set_region(&sys.tia, sys.active_region);
     riot_init(&sys.riot);
+    if (sys.ram_init_hardware)
+        riot_randomize_ram(&sys.riot, riot_entropy_seed());
     sys.riot.pa_changed     = keypad_update;
-    sys.riot.pa_changed_ctx = NULL;
     bus_init(&sys.bus, &sys.cpu, &sys.tia, &sys.riot, &sys.cart);
     {
         struct cpu_bus cb;
