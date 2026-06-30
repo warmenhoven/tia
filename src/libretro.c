@@ -19,26 +19,22 @@
 #endif
 
 #define FRAME_WIDTH       TIA_VISIBLE_WIDTH
-/* Fixed height handed to video_cb and advertised in retro_get_system_av_info.
- * Kept constant frame-to-frame so the frontend's rescale is stable: if we
- * shipped a variable height (e.g. visible_end - visible_start, which drifts
- * by a scanline or two as VSYNC/VBLANK edges wobble), the same TIA scanline
- * would land at a different output Y each frame and stationary content would
- * appear to jitter vertically. The per-frame anchor (offset) still tracks
- * visible_start so games with different visible regions center correctly.
+/* The output is a fixed window into the TIA framebuffer, the way a TV scans a
+ * fixed region. The window starts at a constant scanline (WINDOW_TOP) measured
+ * from the frame top (the VSYNC boundary), so a game's picture lands at
+ * whatever output row its own VBLANK timing puts it: a longer vertical blank
+ * sits lower, a shorter one higher, exactly as a real set shows. We do not
+ * re-anchor to where the game starts drawing -- that would pin content to a
+ * fixed row and erase the vertical timing the hardware would display.
  *
- * Height and top-VBLANK pad are region-dependent: PAL's visible region is
- * ~273 scanlines, which won't fit in the NTSC-sized 228 frame without
- * truncation, so we ship a taller frame and use almost no top pad. */
+ * WINDOW_TOP sits just above where a standard game's picture begins, so the
+ * typical game shows little top border while no real content is clipped. PAL's
+ * picture runs lower and longer, so it uses a taller window. */
 #define FRAME_HEIGHT_NTSC 228
-#define FRAME_HEIGHT_PAL  274
-#define TOP_PAD_NTSC 18
-#define TOP_PAD_PAL   1
+#define FRAME_HEIGHT_PAL  268
+#define WINDOW_TOP_NTSC    34
+#define WINDOW_TOP_PAL     44
 #define HOVERSCAN_TRIM 8        /* pixels cropped from each side when enabled */
-/* Fallback anchor used before the game has performed a VBLANK transition
- * (cold boot / a few frames of boot where visible_start is still the
- * 0xFFFF sentinel). */
-#define SHIP_OFFSET_FALLBACK 30
 #define MAX_CYCLES_PER_RUN 200000        /* safety cap if VSYNC never fires */
 #define AUDIO_BUF_MONO    1024
 
@@ -155,10 +151,10 @@ static uint16_t region_frame_height(enum tia_region r)
     return (r == TIA_REGION_PAL || r == TIA_REGION_SECAM)
            ? FRAME_HEIGHT_PAL : FRAME_HEIGHT_NTSC;
 }
-static uint16_t region_top_pad(enum tia_region r)
+static uint16_t region_window_top(enum tia_region r)
 {
     return (r == TIA_REGION_PAL || r == TIA_REGION_SECAM)
-           ? TOP_PAD_PAL : TOP_PAD_NTSC;
+           ? WINDOW_TOP_PAL : WINDOW_TOP_NTSC;
 }
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
@@ -1061,17 +1057,10 @@ void retro_run(void)
     sys.tia.frame_ready = false;
 
     {
-        /* Per-region output: NTSC ships 228 rows with an 18-row top-VBLANK
-         * strip; PAL/SECAM ship 274 with a 1-row strip (otherwise the
-         * ~273-row PAL visible region would run off the bottom). Anchor at
-         * visible_start minus the region's top pad so content always lands
-         * `top_pad` rows below the frame top regardless of where the game
-         * chooses to end VBLANK. */
-        uint16_t top_pad = region_top_pad(sys.active_region);
-        uint16_t anchor  = (sys.tia.visible_start != 0xFFFF)
-                         ? sys.tia.visible_start
-                         : SHIP_OFFSET_FALLBACK;
-        uint16_t offset  = (anchor > top_pad) ? (uint16_t)(anchor - top_pad) : 0;
+        /* Fixed window: start at the region's constant top scanline and ship a
+         * constant height. The game's picture lands wherever its VBLANK timing
+         * puts it within the window. */
+        uint16_t offset  = region_window_top(sys.active_region);
         uint16_t height  = region_frame_height(sys.active_region);
         uint16_t width   = FRAME_WIDTH;
         uint16_t x_off   = 0;

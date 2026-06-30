@@ -704,16 +704,16 @@ void tia_write(struct tia *t, uint16_t addr, uint8_t data)
             /* Auto-detect: sample the just-finished frame's scanline count
              * starting from frame 1 (frame 0 often has partial/garbage
              * VSYNC while RAM initialises). After TIA_DETECT_FRAMES usable
-             * samples, classify as NTSC (~262) or PAL (~312). The gap is
-             * ~50 lines, far larger than any jitter, so a single pass of
-             * "count votes >275" suffices. */
+             * samples, classify by line count: NTSC kernels run ~262 and
+             * reach ~283 with tall overscan; PAL runs ~295-312. The 284-294
+             * band is empty, so a vote of "lines > 290" cleanly splits them. */
             if (!t->detect_locked && t->frame_number >= 1 &&
                 t->detect_count < TIA_DETECT_FRAMES) {
                 t->detect_samples[t->detect_count++] = t->scanline;
                 if (t->detect_count == TIA_DETECT_FRAMES) {
                     int i, pal_votes = 0;
                     for (i = 0; i < TIA_DETECT_FRAMES; i++)
-                        if (t->detect_samples[i] > 275) pal_votes++;
+                        if (t->detect_samples[i] > 290) pal_votes++;
                     t->detected_region = (pal_votes * 2 > TIA_DETECT_FRAMES)
                                          ? TIA_REGION_PAL : TIA_REGION_NTSC;
                     t->detect_locked = true;

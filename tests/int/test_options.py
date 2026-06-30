@@ -43,7 +43,7 @@ def test_region_force_pal_sets_timing(core_path):
         av = s.core.get_system_av_info()
         assert av.timing.fps == 50.0
         assert av.timing.sample_rate == 31200.0
-        assert av.geometry.base_height == 274
+        assert av.geometry.base_height == 268
         assert s.core.get_region() == 1   # RETRO_REGION_PAL
 
 
@@ -136,7 +136,7 @@ def test_crop_voverscan_shrinks_height(core_path):
     with _run_with_options(rom, {"tia_region": "ntsc", "tia_crop_voverscan": "10"}) as s:
         s.run()
         assert s.core.get_system_av_info().geometry.base_height == 208
-    # Sanity on PAL: 274 - 2*12 = 250.
+    # Sanity on PAL: 268 - 2*12 = 244.
     with _run_with_options(rom, {"tia_region": "pal", "tia_crop_voverscan": "12"}) as s:
         s.run()
-        assert s.core.get_system_av_info().geometry.base_height == 250
+        assert s.core.get_system_av_info().geometry.base_height == 244
