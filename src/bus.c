@@ -18,12 +18,25 @@ void bus_init(struct bus *b, struct cpu *c, struct tia *t,
     b->tia  = t;
     b->riot = r;
     b->cart = cart;
+    b->access_count = 0;
+    b->last_access_addr = 0;
+    /* AR Supercharger needs to reach the 2600's RIOT RAM (the BIOS passes
+     * load info through it) and the bus access counter (write timing). */
+    if (cart->mapper == CART_MAPPER_AR) {
+        cart->ar_ram    = r->ram;
+        cart->ar_access = &b->access_count;
+    }
 }
 
 uint8_t bus_read(void *ctx, uint16_t addr)
 {
     struct bus *b = (struct bus *)ctx;
     uint16_t a;
+    /* Advance the distinct-access counter only when the address changes. */
+    if (addr != b->last_access_addr) {
+        b->access_count++;
+        b->last_access_addr = addr;
+    }
     /* RDY stall: reads are suspended while TIA holds RDY. Each stall cycle
      * ticks the TIA/RIOT but no memory access occurs. Scanline length (228
      * color clocks) is divisible by 3, so cycle-aligned stalls resume exactly
@@ -49,6 +62,11 @@ void bus_write(void *ctx, uint16_t addr, uint8_t data)
     struct bus *b = (struct bus *)ctx;
     uint16_t a;
 
+    /* Advance the distinct-access counter only when the address changes. */
+    if (addr != b->last_access_addr) {
+        b->access_count++;
+        b->last_access_addr = addr;
+    }
     /* Write takes effect at the end of the cycle: all 3 TIA color clocks
      * happen first, then RIOT ticks, then the write lands. This produces
      * correct STA WSYNC behaviour at scanline boundaries: if the scanline

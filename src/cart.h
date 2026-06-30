@@ -11,6 +11,10 @@
 #define CART_DPC_DISP_SIZE 2048          /* DPC display data ROM (2K) */
 #define CART_FA_RAM_SIZE   256           /* CBS RAM+: 256 bytes */
 #define CART_E7_RAM_SIZE   2048          /* M-Network: 1K lower + 4×256 upper */
+#define CART_AR_BANK_SIZE  2048          /* Supercharger bank size */
+#define CART_AR_RAM_SIZE   6144          /* 3 RAM banks */
+#define CART_AR_LOAD_SIZE  8448          /* one on-tape load (8K image + 256B hdr) */
+#define CART_AR_IMAGE_SIZE 8192          /* live image: 6K RAM + 2K BIOS ROM */
 
 enum cart_mapper {
     CART_MAPPER_PLAIN = 0,  /* 2K or 4K ROM, no bank switching */
@@ -24,7 +28,8 @@ enum cart_mapper {
     CART_MAPPER_FA,         /* CBS RAM+: 12K, 3 banks × 4K, 256B cart RAM */
     CART_MAPPER_E7,         /* M-Network: 16K, 8 banks × 2K, 2K cart RAM */
     CART_MAPPER_F0,         /* Megaboy: 64K, 16 banks × 4K, +1 on $1FF0 access */
-    CART_MAPPER_UA          /* UA Ltd: 8K, 2 banks × 4K, hotspots $0220/$0240 */
+    CART_MAPPER_UA,         /* UA Ltd: 8K, 2 banks × 4K, hotspots $0220/$0240 */
+    CART_MAPPER_AR          /* Starpath/Arcadia Supercharger: 6K RAM + 2K BIOS */
 };
 
 struct cart {
@@ -64,6 +69,24 @@ struct cart {
     uint8_t  e7_ram[CART_E7_RAM_SIZE];
     bool     e7_lower_ram;
     uint8_t  e7_upper_bank;
+
+    /* AR (Starpath/Arcadia Supercharger). Live 8K image: 6K RAM at 0..0x17FF
+     * plus a 2K BIOS at 0x1800..0x1FFF; the raw tape loads stay in c->data[].
+     * ar_offset[] maps the two 2K windows into ar_image (offset
+     * CART_AR_RAM_SIZE selects the BIOS). Writes land 5 bus accesses after a
+     * data-hold latch. ar_ram/ar_access point at the RIOT RAM and the bus
+     * access counter. */
+    uint8_t  ar_image[CART_AR_IMAGE_SIZE];
+    uint32_t ar_offset[2];
+    uint8_t  ar_num_loads;
+    int      ar_write_enabled;
+    int      ar_power;
+    int      ar_write_pending;
+    uint8_t  ar_data_hold;
+    uint64_t ar_distinct_at_set;
+    uint8_t  ar_bank;
+    uint8_t *ar_ram;
+    const uint64_t *ar_access;
 };
 
 /* Load ROM. Returns false if size is unsupported. Initialises mapper state

@@ -145,12 +145,203 @@ static uint8_t detect_16k_mapper(const uint8_t *rom, size_t size)
 }
 
 /* ============================================================
+ *   AR (Starpath/Arcadia Supercharger)
+ * ============================================================ */
+
+/* Synthetic Supercharger BIOS: drives the load bars and jumps to the loaded
+ * game. The runtime copy is patched at offsets 109 and 281. */
+static const uint8_t ar_dummy_rom[294] = {
+    0xa5, 0xfa, 0x85, 0x80, 0x4c, 0x18, 0xf8, 0xff,
+    0xff, 0xff, 0x78, 0xd8, 0xa0, 0x00, 0xa2, 0x00,
+    0x94, 0x00, 0xe8, 0xd0, 0xfb, 0x4c, 0x50, 0xf8,
+    0xa2, 0x00, 0xbd, 0x06, 0xf0, 0xad, 0xf8, 0xff,
+    0xa2, 0x00, 0xad, 0x00, 0xf0, 0xea, 0xbd, 0x00,
+    0xf7, 0xca, 0xd0, 0xf6, 0x4c, 0x50, 0xf8, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xa2, 0x03, 0xbc, 0x22, 0xf9, 0x94, 0xfa, 0xca,
+    0x10, 0xf8, 0xa0, 0x00, 0xa2, 0x28, 0x94, 0x04,
+    0xca, 0x10, 0xfb, 0xa2, 0x1c, 0x94, 0x81, 0xca,
+    0x10, 0xfb, 0xa9, 0xff, 0xc9, 0x00, 0xd0, 0x03,
+    0x4c, 0x13, 0xf9, 0xa9, 0x00, 0x85, 0x1b, 0x85,
+    0x1c, 0x85, 0x1d, 0x85, 0x1e, 0x85, 0x1f, 0x85,
+    0x19, 0x85, 0x1a, 0x85, 0x08, 0x85, 0x01, 0xa9,
+    0x10, 0x85, 0x21, 0x85, 0x02, 0xa2, 0x07, 0xca,
+    0xca, 0xd0, 0xfd, 0xa9, 0x00, 0x85, 0x20, 0x85,
+    0x10, 0x85, 0x11, 0x85, 0x02, 0x85, 0x2a, 0xa9,
+    0x05, 0x85, 0x0a, 0xa9, 0xff, 0x85, 0x0d, 0x85,
+    0x0e, 0x85, 0x0f, 0x85, 0x84, 0x85, 0x85, 0xa9,
+    0xf0, 0x85, 0x83, 0xa9, 0x74, 0x85, 0x09, 0xa9,
+    0x0c, 0x85, 0x15, 0xa9, 0x1f, 0x85, 0x17, 0x85,
+    0x82, 0xa9, 0x07, 0x85, 0x19, 0xa2, 0x08, 0xa0,
+    0x00, 0x85, 0x02, 0x88, 0xd0, 0xfb, 0x85, 0x02,
+    0x85, 0x02, 0xa9, 0x02, 0x85, 0x02, 0x85, 0x00,
+    0x85, 0x02, 0x85, 0x02, 0x85, 0x02, 0xa9, 0x00,
+    0x85, 0x00, 0xca, 0x10, 0xe4, 0x06, 0x83, 0x66,
+    0x84, 0x26, 0x85, 0xa5, 0x83, 0x85, 0x0d, 0xa5,
+    0x84, 0x85, 0x0e, 0xa5, 0x85, 0x85, 0x0f, 0xa6,
+    0x82, 0xca, 0x86, 0x82, 0x86, 0x17, 0xe0, 0x0a,
+    0xd0, 0xc3, 0xa9, 0x02, 0x85, 0x01, 0xa2, 0x1c,
+    0xa0, 0x00, 0x84, 0x19, 0x84, 0x09, 0x94, 0x81,
+    0xca, 0x10, 0xfb, 0xa6, 0x80, 0xdd, 0x00, 0xf0,
+    0xa9, 0x9a, 0xa2, 0xff, 0xa0, 0x00, 0x9a, 0x4c,
+    0xfa, 0x00, 0xcd, 0xf8, 0xff, 0x4c
+};
+
+/* Default 256-byte tape-load header (from z26), used only when a raw load
+ * lacks its own (not expected for real Supercharger images). */
+static const uint8_t ar_default_header[256] = {
+    0xac, 0xfa, 0x0f, 0x18, 0x62, 0x00, 0x24, 0x02,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c,
+    0x01, 0x05, 0x09, 0x0d, 0x11, 0x15, 0x19, 0x1d,
+    0x02, 0x06, 0x0a, 0x0e, 0x12, 0x16, 0x1a, 0x1e,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00
+};
+
+/* Apply a bank/RAM/power configuration byte: D4-D0 select the RAM/ROM window
+ * layout, D1 = write-enable, D0 = ROM power. */
+static void ar_bank_config(struct cart *c, uint8_t config)
+{
+    static const uint32_t OFFSET_0[8] = {
+        2 * CART_AR_BANK_SIZE, 0 * CART_AR_BANK_SIZE,
+        2 * CART_AR_BANK_SIZE, 0 * CART_AR_BANK_SIZE,
+        2 * CART_AR_BANK_SIZE, 1 * CART_AR_BANK_SIZE,
+        2 * CART_AR_BANK_SIZE, 1 * CART_AR_BANK_SIZE
+    };
+    static const uint32_t OFFSET_1[8] = {
+        3 * CART_AR_BANK_SIZE, 3 * CART_AR_BANK_SIZE,
+        0 * CART_AR_BANK_SIZE, 2 * CART_AR_BANK_SIZE,
+        3 * CART_AR_BANK_SIZE, 3 * CART_AR_BANK_SIZE,
+        1 * CART_AR_BANK_SIZE, 2 * CART_AR_BANK_SIZE
+    };
+    int bank_config = (config >> 2) & 7;
+
+    c->ar_bank          = (uint8_t)(config & 0x1F);
+    c->ar_power         = !(config & 1);
+    c->ar_write_enabled = (config & 2) ? 1 : 0;
+    c->ar_offset[0]     = OFFSET_0[bank_config];
+    c->ar_offset[1]     = OFFSET_1[bank_config];
+}
+
+/* Set up the synthetic BIOS in the 2K ROM bank of the live image. */
+static void ar_init_rom(struct cart *c)
+{
+    uint8_t code[294];
+    memcpy(code, ar_dummy_rom, sizeof code);
+    code[109] = 0x00;   /* 0x00 -> show SC BIOS load bars (vs 0xFF: skip them) */
+    code[281] = 0x00;   /* value left in A on BIOS exit; fixed 0 is fine */
+
+    /* Fill the ROM bank with an illegal 6502 opcode (0x02 jams a real CPU),
+     * then drop the BIOS code over the start of it. */
+    memset(c->ar_image + CART_AR_RAM_SIZE, 0x02, CART_AR_BANK_SIZE);
+    memcpy(c->ar_image + CART_AR_RAM_SIZE, code, sizeof code);
+
+    /* 6502 vectors point at the initial load code at $F80A. */
+    c->ar_image[CART_AR_RAM_SIZE + CART_AR_BANK_SIZE - 4] = 0x0A;
+    c->ar_image[CART_AR_RAM_SIZE + CART_AR_BANK_SIZE - 3] = 0xF8;
+    c->ar_image[CART_AR_RAM_SIZE + CART_AR_BANK_SIZE - 2] = 0x0A;
+    c->ar_image[CART_AR_RAM_SIZE + CART_AR_BANK_SIZE - 1] = 0xF8;
+}
+
+/* Copy the requested tape load's pages into the live RAM image and hand the
+ * BIOS its bank-switch/start info through the 2600's RIOT RAM. Page
+ * checksums are not verified. */
+static void ar_load_into_ram(struct cart *c, uint8_t load)
+{
+    uint16_t image;
+
+    for (image = 0; image < c->ar_num_loads; image++) {
+        uint32_t off = (uint32_t)image * CART_AR_LOAD_SIZE;
+        const uint8_t *hdr;
+        unsigned j;
+
+        if (c->data[off + CART_AR_IMAGE_SIZE + 5] != load)
+            continue;
+
+        hdr = &c->data[off + CART_AR_IMAGE_SIZE];   /* 256-byte load header */
+
+        for (j = 0; j < hdr[3]; j++) {
+            unsigned bank = hdr[16 + j] & 0x03;
+            unsigned page = (hdr[16 + j] >> 2) & 0x07;
+            if (bank < 3)
+                memcpy(&c->ar_image[bank * CART_AR_BANK_SIZE + page * 256u],
+                       &c->data[off + j * 256u], 256);
+        }
+
+        /* Pass the bank-switch byte and start address to the BIOS via the
+         * 2600's RIOT RAM: 6507 $FE/$FF/$80 -> ar_ram[0x7E]/[0x7F]/[0x00]. */
+        c->ar_ram[0x7E] = hdr[0];
+        c->ar_ram[0x7F] = hdr[1];
+        c->ar_ram[0x00] = hdr[2];
+        return;
+    }
+}
+
+/* ============================================================
  *   Load
  * ============================================================ */
 
 bool cart_load(struct cart *c, const void *rom, size_t size)
 {
     memset(c, 0, sizeof(*c));
+
+    /* AR (Starpath/Arcadia Supercharger): the on-tape format is a whole
+     * number of 8448-byte loads (8448/16896/25344/33792 bytes), none of
+     * which collide with a standard ROM size. The raw loads stay in
+     * c->data[]; the live 8K image (RAM + BIOS) is built in c->ar_image. */
+    if (size > 0 && size % CART_AR_LOAD_SIZE == 0) {
+        if (size > CART_MAX_SIZE) return false;
+        memcpy(c->data, rom, size);
+        c->size         = (uint32_t)size;
+        c->ar_num_loads = (uint8_t)(size / CART_AR_LOAD_SIZE);
+        c->mapper       = CART_MAPPER_AR;
+
+        /* If a raw load lacks its own header, append the default one after
+         * the 8K image area (not expected for real images). */
+        if (size < CART_AR_LOAD_SIZE)
+            memcpy(c->data + CART_AR_IMAGE_SIZE, ar_default_header,
+                   sizeof ar_default_header);
+
+        /* RAM (ar_image[0..RAM_SIZE)) is already zero from the memset. */
+        ar_init_rom(c);
+
+        c->ar_write_enabled  = 0;
+        c->ar_power          = 1;
+        c->ar_data_hold      = 0;
+        c->ar_distinct_at_set = 0;
+        c->ar_write_pending  = 0;
+        ar_bank_config(c, 0);
+        return true;
+    }
 
     switch (size) {
     case 2048:
@@ -375,6 +566,45 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
          * cart_snoop_bus when the CPU accesses $0220/$0240 (RIOT space). */
         return c->data[c->bank * 4096u + a];
 
+    case CART_MAPPER_AR: {
+        /* Decode the full 13-bit address (hotspots at $1850 and $1FF8). */
+        uint16_t aa = (uint16_t)(addr & 0x1FFF);
+
+        /* "Dummy" SC BIOS hotspot for reading a load: only live while the
+         * BIOS ROM is mapped into the upper window. */
+        if (aa == 0x1850 && c->ar_offset[1] == CART_AR_RAM_SIZE) {
+            uint8_t load = c->ar_ram[0x00];   /* BIOS leaves load # at $0080 */
+            ar_load_into_ram(c, load);
+            return c->ar_image[(aa & 0x7FF) + c->ar_offset[1]];
+        }
+
+        /* Cancel a pending write if more than 5 distinct accesses elapsed. */
+        if (c->ar_write_pending &&
+            *c->ar_access > c->ar_distinct_at_set + 5)
+            c->ar_write_pending = 0;
+
+        if (!(aa & 0x0F00) && (!c->ar_write_enabled || !c->ar_write_pending)) {
+            /* Latch the data-hold register (low address byte). */
+            c->ar_data_hold       = (uint8_t)aa;
+            c->ar_distinct_at_set = *c->ar_access;
+            c->ar_write_pending   = 1;
+        } else if (aa == 0x1FF8) {
+            /* Bank-configuration hotspot. */
+            c->ar_write_pending = 0;
+            ar_bank_config(c, c->ar_data_hold);
+        } else if (c->ar_write_enabled && c->ar_write_pending &&
+                   *c->ar_access == c->ar_distinct_at_set + 5) {
+            /* Delayed write lands exactly 5 accesses after the latch. */
+            if ((aa & 0x800) == 0)
+                c->ar_image[(aa & 0x7FF) + c->ar_offset[0]] = c->ar_data_hold;
+            else if (c->ar_offset[1] != CART_AR_RAM_SIZE)   /* can't poke ROM */
+                c->ar_image[(aa & 0x7FF) + c->ar_offset[1]] = c->ar_data_hold;
+            c->ar_write_pending = 0;
+        }
+
+        return c->ar_image[(aa & 0x7FF) + c->ar_offset[(aa & 0x800) ? 1 : 0]];
+    }
+
     case CART_MAPPER_FA:
         /* Hotspots $1FF8/9/A select banks 0/1/2. Cart RAM: writes on
          * $1000-$10FF, reads on $1100-$11FF (same 256 bytes, windowed). */
@@ -553,6 +783,33 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
     case CART_MAPPER_UA:
         /* ROM only; bank switching is via the $0220/$0240 snoop. */
         return;
+
+    case CART_MAPPER_AR: {
+        /* Same state machine as the read path, minus the $1850 load hotspot
+         * and the return value. The data byte on the bus is ignored. */
+        uint16_t aa = (uint16_t)(addr & 0x1FFF);
+
+        if (c->ar_write_pending &&
+            *c->ar_access > c->ar_distinct_at_set + 5)
+            c->ar_write_pending = 0;
+
+        if (!(aa & 0x0F00) && (!c->ar_write_enabled || !c->ar_write_pending)) {
+            c->ar_data_hold       = (uint8_t)aa;
+            c->ar_distinct_at_set = *c->ar_access;
+            c->ar_write_pending   = 1;
+        } else if (aa == 0x1FF8) {
+            c->ar_write_pending = 0;
+            ar_bank_config(c, c->ar_data_hold);
+        } else if (c->ar_write_enabled && c->ar_write_pending &&
+                   *c->ar_access == c->ar_distinct_at_set + 5) {
+            if ((aa & 0x800) == 0)
+                c->ar_image[(aa & 0x7FF) + c->ar_offset[0]] = c->ar_data_hold;
+            else if (c->ar_offset[1] != CART_AR_RAM_SIZE)
+                c->ar_image[(aa & 0x7FF) + c->ar_offset[1]] = c->ar_data_hold;
+            c->ar_write_pending = 0;
+        }
+        return;
+    }
 
     case CART_MAPPER_FA:
         if (a == 0xFF8)      { c->bank = 0; return; }

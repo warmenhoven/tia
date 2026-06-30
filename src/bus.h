@@ -20,6 +20,12 @@ struct bus {
     struct tia  *tia;
     struct riot *riot;
     struct cart *cart;
+    /* Distinct-memory-access counter: advances on each CPU access whose
+     * address differs from the previous one (a repeat of the same address
+     * does not count). The AR Supercharger times its delayed RAM writes off
+     * it; last_access_addr holds the previous address. */
+    uint64_t    access_count;
+    uint16_t    last_access_addr;
 };
 
 void bus_init(struct bus *b, struct cpu *c, struct tia *t,
