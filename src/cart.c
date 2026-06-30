@@ -78,6 +78,22 @@ static uint8_t detect_8k_mapper(const uint8_t *rom, size_t size)
         if (count_bytes(rom, size, f3, 2, 2) >= 2) return CART_MAPPER_3F;
     }
 
+    /* UA (UA Ltd): bank-select by accessing $0220/$0240 (and the $02xx
+     * mirrors that decode to them). */
+    {
+        static const uint8_t ua[][3] = {
+            { 0x8D, 0x40, 0x02 },  /* STA $0240   */
+            { 0xAD, 0x40, 0x02 },  /* LDA $0240   */
+            { 0xBD, 0x1F, 0x02 },  /* LDA $021F,X */
+            { 0x2C, 0xC0, 0x02 },  /* BIT $02C0   */
+            { 0x8D, 0xC0, 0x02 },  /* STA $02C0   */
+            { 0xAD, 0xC0, 0x02 }   /* LDA $02C0   */
+        };
+        size_t i;
+        for (i = 0; i < sizeof ua / sizeof ua[0]; i++)
+            if (find_bytes(rom, size, ua[i], 3)) return CART_MAPPER_UA;
+    }
+
     /* FE (Activision): JSR-through-stack signatures — only when the ROM
      * doesn't already look like F8. */
     if (!looks_f8) {
@@ -354,6 +370,11 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
          * cart_snoop_bus when the CPU accesses $01FE (RIOT space). */
         return c->data[c->bank * 4096u + a];
 
+    case CART_MAPPER_UA:
+        /* No in-cart-space hotspots. Bank switching happens via
+         * cart_snoop_bus when the CPU accesses $0220/$0240 (RIOT space). */
+        return c->data[c->bank * 4096u + a];
+
     case CART_MAPPER_FA:
         /* Hotspots $1FF8/9/A select banks 0/1/2. Cart RAM: writes on
          * $1000-$10FF, reads on $1100-$11FF (same 256 bytes, windowed). */
@@ -529,6 +550,10 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
         /* ROM only; writes ignored. Bank switching is via $01FE snoop. */
         return;
 
+    case CART_MAPPER_UA:
+        /* ROM only; bank switching is via the $0220/$0240 snoop. */
+        return;
+
     case CART_MAPPER_FA:
         if (a == 0xFF8)      { c->bank = 0; return; }
         else if (a == 0xFF9) { c->bank = 1; return; }
@@ -613,6 +638,18 @@ void cart_snoop_write(struct cart *c, uint16_t addr, uint8_t data)
 
 void cart_snoop_bus(struct cart *c, uint16_t addr, uint8_t data)
 {
+    if (c->mapper == CART_MAPPER_UA) {
+        /* Any access (read or write) to $0220/$0240 selects the low/high 4K
+         * bank.  The $02xx mirrors that decode here are folded in via the
+         * 0x1260 mask (e.g. $02C0 -> $0240). */
+        switch (addr & 0x1260) {
+        case 0x0220: c->bank = 0; break;
+        case 0x0240: c->bank = 1; break;
+        default:                  break;
+        }
+        return;
+    }
+
     if (c->mapper != CART_MAPPER_FE) return;
 
     /* FE state machine: if the PREVIOUS access hit $01FE, the data byte

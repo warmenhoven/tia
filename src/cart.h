@@ -23,7 +23,8 @@ enum cart_mapper {
     CART_MAPPER_DPC,        /* Pitfall II: 8K prog + 2K display + co-processor */
     CART_MAPPER_FA,         /* CBS RAM+: 12K, 3 banks × 4K, 256B cart RAM */
     CART_MAPPER_E7,         /* M-Network: 16K, 8 banks × 2K, 2K cart RAM */
-    CART_MAPPER_F0          /* Megaboy: 64K, 16 banks × 4K, +1 on $1FF0 access */
+    CART_MAPPER_F0,         /* Megaboy: 64K, 16 banks × 4K, +1 on $1FF0 access */
+    CART_MAPPER_UA          /* UA Ltd: 8K, 2 banks × 4K, hotspots $0220/$0240 */
 };
 
 struct cart {

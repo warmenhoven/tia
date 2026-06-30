@@ -300,6 +300,42 @@ static int test_3f_bank_switch_via_snoop(void)
 }
 
 /* ============================================================
+ *   UA (UA Ltd): 8K, 2 × 4K banks, hotspots $0220/$0240
+ * ============================================================ */
+
+static int test_ua_detection_and_bank_switch(void)
+{
+    struct cart c;
+    uint8_t rom[8192];
+    int i;
+    /* Per-4K-bank marker byte (top 2 bits = bank index). */
+    for (i = 0; i < 8192; i++)
+        rom[i] = (uint8_t)(((i / 4096) << 6) | (i & 0x3F));
+    /* Plant a UA signature: STA $0240 (8D 40 02). */
+    rom[0x100] = 0x8D; rom[0x101] = 0x40; rom[0x102] = 0x02;
+
+    ASSERT_TRUE(cart_load(&c, rom, 8192));
+    ASSERT_EQ(c.mapper, CART_MAPPER_UA);
+    ASSERT_EQ(c.bank, 0);                          /* boots the low 4K bank */
+    ASSERT_EQ(cart_read(&c, 0x1000), 0x00);        /* bank 0 marker */
+
+    /* Accessing $0240 (RIOT space, not cart space) selects the high bank. */
+    cart_snoop_bus(&c, 0x0240, 0);
+    ASSERT_EQ(c.bank, 1);
+    ASSERT_EQ(cart_read(&c, 0x1000), (1 << 6));    /* bank 1 marker */
+
+    /* Accessing $0220 selects the low bank again. */
+    cart_snoop_bus(&c, 0x0220, 0);
+    ASSERT_EQ(c.bank, 0);
+    ASSERT_EQ(cart_read(&c, 0x1000), 0x00);
+
+    /* The $02C0 mirror decodes (via the 0x1260 mask) to the $0240 hotspot. */
+    cart_snoop_bus(&c, 0x02C0, 0);
+    ASSERT_EQ(c.bank, 1);
+    return 0;
+}
+
+/* ============================================================
  *   FA (CBS RAM+): 12K, 3 banks, 256 B RAM
  * ============================================================ */
 
@@ -521,6 +557,7 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_e0_slot_switching);
     RUN_TEST(test_3f_detection_and_fixed_upper);
     RUN_TEST(test_3f_bank_switch_via_snoop);
+    RUN_TEST(test_ua_detection_and_bank_switch);
     RUN_TEST(test_fa_loads_and_starts_in_last_bank);
     RUN_TEST(test_fa_hotspots_switch_banks);
     RUN_TEST(test_fa_ram_roundtrip);
