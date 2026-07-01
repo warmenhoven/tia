@@ -10,17 +10,16 @@ static void full_scanline(struct tia *t)
     for (i = 0; i < TIA_SCANLINE_CLOCKS; i++) tia_tick(t);
 }
 
-/* Issue an HMOVE strobe and let the full cycle-accurate motion window
- * close before the caller asserts.  The strobe itself is pipelined 6
- * colour clocks (delay queue), and the HMOVE motion state machine then
- * runs for another 24 colour clocks emitting pulses.  Draining 30
- * clocks is enough for any HMx magnitude and leaves the state machine
- * inactive so subsequent writes behave normally. */
+/* Issue an HMOVE strobe (from hpos 0, i.e. HBLANK) and drain a full
+ * scanline so the motion completes.  The strobe is pipelined 6 colour
+ * clocks; the engine then stuffs one clock per object every 4 colour
+ * clocks through HBLANK, so up to 15 stuffs span ~60 colour clocks.
+ * Draining the whole line closes the window and leaves it inactive. */
 static void hmove_and_drain(struct tia *t)
 {
     int i;
     tia_write(t, 0x2A, 0);
-    for (i = 0; i < 30; i++) tia_tick(t);
+    for (i = 0; i < TIA_SCANLINE_CLOCKS; i++) tia_tick(t);
 }
 
 static int expect_range(const struct tia *t, uint16_t x_lo, uint16_t x_hi,
@@ -167,21 +166,21 @@ static int test_hmove_comb_in_hblank(void)
     return 0;
 }
 
-static int test_hmove_comb_mid_visible(void)
+static int test_hmove_no_comb_mid_visible(void)
 {
-    /* HMOVE strobe is pipelined 6 colour clocks on real hardware, so a
-     * store at visible x=50 actually starts the comb at x=56. Pixels
-     * 50..55 show the background, 56..63 show the comb, then background
-     * resumes. */
+    /* HMOVE strobed deep in the visible region paints NO comb: the extended
+     * HBLANK only blanks the leftmost 8 visible px, and the beam is long past
+     * them by the time a mid-line strobe lands, so the whole line stays
+     * background. Verified against the gate-level oracle (csim), which shows
+     * continuous background where our earlier floating-comb model wrongly
+     * painted an 8-px black band. */
     struct tia t;
     int i;
     std_setup(&t);
-    for (i = 0; i < TIA_HBLANK_CLOCKS + 50; i++) tia_tick(&t);  /* hpos=118, visible x=50 */
+    for (i = 0; i < TIA_HBLANK_CLOCKS + 50; i++) tia_tick(&t);  /* visible x=50 */
     tia_write(&t, 0x2A, 0);
     for (; i < TIA_SCANLINE_CLOCKS; i++) tia_tick(&t);
-    if (expect_range(&t, 50, 54,  BG_COLOR(t), "pre-delay bg"))    return 1;
-    if (expect_range(&t, 55, 62,  BLACK(t),    "mid-visible comb")) return 1;
-    if (expect_range(&t, 63, 159, BG_COLOR(t), "after mid comb"))  return 1;
+    if (expect_range(&t, 0, 159, BG_COLOR(t), "no mid-visible comb")) return 1;
     return 0;
 }
 
@@ -232,7 +231,7 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_hmove_applies_to_all_objects);
     RUN_TEST(test_hmclr_zeroes_all_hm);
     RUN_TEST(test_hmove_comb_in_hblank);
-    RUN_TEST(test_hmove_comb_mid_visible);
+    RUN_TEST(test_hmove_no_comb_mid_visible);
     RUN_TEST(test_hmove_moves_and_combs);
     RUN_TEST(test_serialize_hmove);
 TEST_MAIN_END

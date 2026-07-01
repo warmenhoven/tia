@@ -63,6 +63,10 @@ void tia_init(struct tia *t)
     }
     /* Input pins float high when nothing is connected / no button pressed. */
     for (i = 0; i < 6; i++) t->inpt[i] = 0x80;
+    /* HM registers power up to 0, so each object's motion target is
+     * (0>>4)^8 = 8 (net-zero). memset leaves these 0, which would move every
+     * object +8 on a bare HMOVE, so seed them here (tia_reset re-seeds). */
+    for (i = 0; i < 5; i++) t->hmm_clocks[i] = 8;
 }
 
 void tia_reset(struct tia *t)
@@ -102,10 +106,13 @@ void tia_reset(struct tia *t)
     t->vdelbl = false;
     t->bl_pos = 0; t->hmbl = 0;
     t->hmove_blank = 0;
-    t->hm_remaining[0] = t->hm_remaining[1] = t->hm_remaining[2] =
-        t->hm_remaining[3] = t->hm_remaining[4] = 0;
+    t->extended_hblank = false;
     t->hmove_active = false;
-    t->hmove_ticks  = 0;
+    t->hmove_clock = 0;
+    t->hmm_clocks[0] = t->hmm_clocks[1] = t->hmm_clocks[2] =
+        t->hmm_clocks[3] = t->hmm_clocks[4] = 8;   /* (0>>4)^8 = net 0 */
+    t->obj_moving[0] = t->obj_moving[1] = t->obj_moving[2] =
+        t->obj_moving[3] = t->obj_moving[4] = false;
     {
         int i, j;
         for (i = 0; i < 8; i++)
@@ -280,16 +287,6 @@ static void audio_emit_sample(struct tia *t)
         t->audio_buf[t->audio_buf_len++] = t->audio_mix[s0 + s1];
 }
 
-/* Decode HM register's 4-bit signed motion value in the high nibble.
- * Positive values move the object LEFT (subtract from position);
- * negative values move it RIGHT. */
-static int hm_decode(uint8_t hm)
-{
-    int v = (hm >> 4) & 0x0F;
-    if (v & 0x08) v -= 16;
-    return v;
-}
-
 /* Missile size (color clocks) from NUSIZ bits 4-5. */
 static int missile_size(uint8_t nusiz)
 {
@@ -302,16 +299,30 @@ static int ball_size(uint8_t ctrlpf)
     return 1 << ((ctrlpf >> 4) & 0x03);
 }
 
-/* Does a missile (any NUSIZ copy) cover visible-x `x`? */
-static int missile_pixel_on(int x, int start, uint8_t nusiz, bool enam)
+/* Does a missile (any NUSIZ copy) cover visible-x `x`? When `moving` (the
+ * object is still receiving HMOVE clocks in the visible region, e.g. Cosmic
+ * Ark's runaway missile), the "star" is modulated by the color-clock phase at
+ * its start: phase 2 suppresses it, phase 3 widens a 1px star to 2px and shows
+ * it one clock early. */
+static int missile_pixel_on(int x, int start, uint8_t nusiz, bool enam,
+                            bool moving)
 {
     int copies = nusiz_copies(nusiz);
     int spacing = nusiz_copy_spacing(nusiz);
     int size = missile_size(nusiz);
+    int early = 0;
     int c;
     if (!enam) return 0;
+    if (moving) {
+        int phase = (start + 1) & 3;
+        if (phase == 2) return 0;              /* star suppressed */
+        if (phase == 3) {
+            if (size < 4) early = 1;           /* star shows one clock early */
+            if (size == 1) size = 2;           /* 1px star widened to 2 */
+        }
+    }
     for (c = 0; c < copies; c++) {
-        int cs = start + c * spacing;
+        int cs = start + c * spacing - early;
         if (x >= cs && x < cs + size) return 1;
     }
     return 0;
@@ -392,9 +403,11 @@ static uint8_t pixel_color(struct tia *t, uint16_t x)
     p1_on = player_pixel_on(g1, (int)x, (int)t->p1_pos, t->nusiz1, t->refp1);
 
     m0_on = !t->resmp0 &&
-            missile_pixel_on((int)x, (int)t->m0_pos, t->nusiz0, t->enam0);
+            missile_pixel_on((int)x, (int)t->m0_pos, t->nusiz0, t->enam0,
+                             t->obj_moving[2]);
     m1_on = !t->resmp1 &&
-            missile_pixel_on((int)x, (int)t->m1_pos, t->nusiz1, t->enam1);
+            missile_pixel_on((int)x, (int)t->m1_pos, t->nusiz1, t->enam1,
+                             t->obj_moving[3]);
 
     eff_enabl = t->vdelbl ? t->enabl_latch : t->enabl;
     bl_on = ball_pixel_on((int)x, (int)t->bl_pos, t->ctrlpf, eff_enabl);
@@ -432,27 +445,36 @@ void tia_tick(struct tia *t)
      * tick's pixel-render code. */
     delay_tick(t);
 
-    /* Cycle-accurate HMOVE state machine.  On each clock within the
-     * motion window, emit at most one "extra" pixel-counter pulse per
-     * object whose pending count is non-zero, stepping it toward 0.
-     * A mid-window HMx write (handled in delay_apply) replaces the
-     * pending count with the new decoded motion — Cosmic Ark strobes
-     * HMOVE, then rewrites HMM0 partway through the window to inject
-     * fresh motion pulses on the missile's pixel counter, which
-     * produces the starfield.  Window is 24 CPU cycles = 72 colour
-     * clocks, matching Andrew Towers' TIA Hardware Notes. */
-    if (t->hmove_active) {
-        if      (t->hm_remaining[0] > 0) { t->p0_pos--; t->hm_remaining[0]--; }
-        else if (t->hm_remaining[0] < 0) { t->p0_pos++; t->hm_remaining[0]++; }
-        if      (t->hm_remaining[1] > 0) { t->p1_pos--; t->hm_remaining[1]--; }
-        else if (t->hm_remaining[1] < 0) { t->p1_pos++; t->hm_remaining[1]++; }
-        if      (t->hm_remaining[2] > 0) { t->m0_pos--; t->hm_remaining[2]--; }
-        else if (t->hm_remaining[2] < 0) { t->m0_pos++; t->hm_remaining[2]++; }
-        if      (t->hm_remaining[3] > 0) { t->m1_pos--; t->hm_remaining[3]--; }
-        else if (t->hm_remaining[3] < 0) { t->m1_pos++; t->hm_remaining[3]++; }
-        if      (t->hm_remaining[4] > 0) { t->bl_pos--; t->hm_remaining[4]--; }
-        else if (t->hm_remaining[4] < 0) { t->bl_pos++; t->hm_remaining[4]++; }
-        if (++t->hmove_ticks >= 24) t->hmove_active = false;
+    /* HMOVE motion engine: once every 4 color clocks, step the shared counter
+     * and give each still-moving object one extra clock (1px left, but only
+     * while blanked) until the counter reaches that object's target hmm_clocks.
+     * The counter clamps to 0 above 15, so an object whose target the counter
+     * has already passed never stops (Cosmic Ark). See hmove-mechanism memory. */
+    if (t->hmove_active && (t->hpos & 3u) == 0) {
+        uint16_t cmp = (t->hmove_clock > 15u) ? 0u : t->hmove_clock;
+        int hblank = t->hpos < (uint16_t)(TIA_HBLANK_CLOCKS +
+                                          (t->extended_hblank ? 8 : 0));
+        int16_t *pos[5];
+        int k;
+        pos[0] = &t->p0_pos; pos[1] = &t->p1_pos; pos[2] = &t->m0_pos;
+        pos[3] = &t->m1_pos; pos[4] = &t->bl_pos;
+        for (k = 0; k < 5; k++) {
+            if (!t->obj_moving[k]) continue;
+            if (cmp == t->hmm_clocks[k]) t->obj_moving[k] = false;
+            else if (hblank) {   /* 1px left. The counter wraps 0 -> 159 as a
+                                  * moving object crosses x=0, but an object
+                                  * parked off-screen (negative, e.g. RESMx
+                                  * strobed in HBLANK) must stay off-screen —
+                                  * wrapping it onto the visible line drew a
+                                  * spurious 8px bar (Pitfall II's missile). */
+                if (*pos[k] == 0) *pos[k] = TIA_VISIBLE_WIDTH - 1;
+                else              (*pos[k])--;
+            }
+        }
+        t->hmove_active = t->obj_moving[0] || t->obj_moving[1] ||
+                          t->obj_moving[2] || t->obj_moving[3] ||
+                          t->obj_moving[4];
+        t->hmove_clock++;
     }
     /* Audio runs every color clock, agnostic of HBLANK/VBLANK/VSYNC. */
     t->audio_sum[0] += audio_actual_volume(t, 0);
@@ -537,6 +559,8 @@ void tia_tick(struct tia *t)
             t->scanline++;
         /* WSYNC releases at the start of a new scanline. */
         t->rdy_asserted = false;
+        /* The HMOVE comb / extended HBLANK re-arms each line. */
+        t->extended_hblank = false;
     }
 }
 
@@ -637,35 +661,51 @@ static void delay_apply(struct tia *t, uint8_t reg, uint8_t data)
      * mid-window, the new value ALSO replaces the pending pulse count,
      * so additional pulses fire through the rest of the window based
      * on the new motion — Cosmic Ark's starfield trick. */
+    /* HMx writes set that object's motion target hmm_clocks = (v>>4)^8 (0..15)
+     * unconditionally. If a HMOVE window is open, this just moves the object's
+     * stop point — the runaway case (target already passed) is what draws the
+     * Cosmic Ark starfield; nothing special is needed here. */
     case 0x20: t->hmp0 = data;
-               if (t->hmove_active) t->hm_remaining[0] = (int8_t)hm_decode(data);
+               t->hmm_clocks[0] = (uint8_t)(((data >> 4) & 0x0F) ^ 0x08);
                break;
     case 0x21: t->hmp1 = data;
-               if (t->hmove_active) t->hm_remaining[1] = (int8_t)hm_decode(data);
+               t->hmm_clocks[1] = (uint8_t)(((data >> 4) & 0x0F) ^ 0x08);
                break;
     case 0x22: t->hmm0 = data;
-               if (t->hmove_active) t->hm_remaining[2] = (int8_t)hm_decode(data);
+               t->hmm_clocks[2] = (uint8_t)(((data >> 4) & 0x0F) ^ 0x08);
                break;
     case 0x23: t->hmm1 = data;
-               if (t->hmove_active) t->hm_remaining[3] = (int8_t)hm_decode(data);
+               t->hmm_clocks[3] = (uint8_t)(((data >> 4) & 0x0F) ^ 0x08);
                break;
     case 0x24: t->hmbl = data;
-               if (t->hmove_active) t->hm_remaining[4] = (int8_t)hm_decode(data);
+               t->hmm_clocks[4] = (uint8_t)(((data >> 4) & 0x0F) ^ 0x08);
                break;
-    case 0x2A: /* HMOVE — start the cycle-accurate motion window */
-        t->hm_remaining[0] = (int8_t)hm_decode(t->hmp0);
-        t->hm_remaining[1] = (int8_t)hm_decode(t->hmp1);
-        t->hm_remaining[2] = (int8_t)hm_decode(t->hmm0);
-        t->hm_remaining[3] = (int8_t)hm_decode(t->hmm1);
-        t->hm_remaining[4] = (int8_t)hm_decode(t->hmbl);
-        t->hmove_active    = true;
-        t->hmove_ticks     = 0;
-        t->hmove_blank     = 8;     /* visible 8-clock comb */
+    case 0x2A: /* HMOVE — arm the motion window; arm the comb on the first
+                * HMOVE of a line only. */
+        t->hmove_clock  = 0;
+        t->hmove_active = true;
+        t->obj_moving[0] = t->obj_moving[1] = t->obj_moving[2] =
+            t->obj_moving[3] = t->obj_moving[4] = true;
+        if (!t->extended_hblank) {
+            t->extended_hblank = true;
+            /* The comb is the extended HBLANK: it only blanks the leftmost 8
+             * visible px, and only when HMOVE is strobed during HBLANK (before
+             * the beam reaches the visible region). A mid-visible strobe arms
+             * the motion but paints no black band — verified against the
+             * gate-level oracle, which shows continuous background there. */
+            if (t->hpos < TIA_HBLANK_CLOCKS)
+                t->hmove_blank = 8;      /* 8-px left-edge comb */
+            /* The 8-clock extended HBLANK is a +8-right baseline (objects miss
+             * 8 normal ticks). We carry fixed positions, so shift them here. */
+            t->p0_pos += 8; t->p1_pos += 8; t->m0_pos += 8;
+            t->m1_pos += 8; t->bl_pos += 8;
+        }
         break;
-    case 0x2B: /* HMCLR — zero all HM registers AND any pulses in flight */
+    case 0x2B: /* HMCLR — reset all targets to net-0; does NOT clear a stuck
+                * in-progress latch (matches hardware). */
         t->hmp0 = t->hmp1 = t->hmm0 = t->hmm1 = t->hmbl = 0;
-        t->hm_remaining[0] = t->hm_remaining[1] = t->hm_remaining[2] =
-            t->hm_remaining[3] = t->hm_remaining[4] = 0;
+        t->hmm_clocks[0] = t->hmm_clocks[1] = t->hmm_clocks[2] =
+            t->hmm_clocks[3] = t->hmm_clocks[4] = 8;
         break;
     default: break;
     }
@@ -931,11 +971,18 @@ void tia_serialize(const struct tia *t, void *buf)
                     }
                 *q++ = t->delay_head;
             }
-            /* Cycle-accurate HMOVE state (7 bytes): 5× signed pending
-             * pulses + active flag + ticks elapsed. */
-            for (i = 0; i < 5; i++) *q++ = (uint8_t)t->hm_remaining[i];
-            *q++ = (uint8_t)(t->hmove_active ? 1 : 0);
-            *q++ = t->hmove_ticks;
+            /* HMOVE motion engine (7 bytes): 5 per-object targets, a packed
+             * flags byte (moving latches + active + comb), the shared clock. */
+            for (i = 0; i < 5; i++) *q++ = t->hmm_clocks[i];
+            {
+                uint8_t f = (uint8_t)((t->hmove_active ? 0x80u : 0u) |
+                                      (t->extended_hblank ? 0x40u : 0u));
+                int k;
+                for (k = 0; k < 5; k++)
+                    if (t->obj_moving[k]) f |= (uint8_t)(1u << k);
+                *q++ = f;
+            }
+            *q++ = (uint8_t)(t->hmove_clock > 255u ? 255u : t->hmove_clock);
         }
     }
 }
@@ -1049,10 +1096,16 @@ bool tia_deserialize(struct tia *t, const void *buf, size_t size)
                 }
             t->delay_head = *ip++;
         }
-        /* Cycle-accurate HMOVE state (7 bytes). */
-        for (i = 0; i < 5; i++) t->hm_remaining[i] = (int8_t)*ip++;
-        t->hmove_active = *ip++ != 0;
-        t->hmove_ticks  = *ip++;
+        /* HMOVE motion engine (7 bytes). */
+        for (i = 0; i < 5; i++) t->hmm_clocks[i] = *ip++;
+        {
+            uint8_t f = *ip++;
+            int k;
+            t->hmove_active    = (f & 0x80u) != 0;
+            t->extended_hblank = (f & 0x40u) != 0;
+            for (k = 0; k < 5; k++) t->obj_moving[k] = (f & (1u << k)) != 0;
+        }
+        t->hmove_clock = *ip++;
     }
     return true;
 }

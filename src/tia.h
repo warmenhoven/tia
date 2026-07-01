@@ -117,33 +117,22 @@ struct tia {
     int16_t  bl_pos;
     uint8_t  hmbl;
 
-    /* HMOVE: countdown of "extended HBLANK" clocks remaining. Each of
-     * these visible color clocks shows black, creating the left-edge
-     * "HMOVE comb" when HMOVE is strobed during HBLANK. */
-    uint8_t  hmove_blank;
-
-    /* Cycle-accurate HMOVE state machine.  Real TIA hardware applies
-     * motion gradually over a ~24-CPU-cycle window by emitting "extra
-     * clock" pulses into each object's pixel counter; rewriting HMx
-     * mid-window takes effect on the remaining pulses, which is what
-     * Cosmic Ark relies on to paint its starfield.  We model this as:
-     *
-     *   hm_remaining[i] = signed pulses still to emit for object i
-     *                     (P0=0, P1=1, M0=2, M1=3, BL=4).
-     *                     Positive = left-going pulses, negative =
-     *                     right-going.  Each tick, if non-zero, one
-     *                     pulse fires and the count steps toward 0.
-     *   hmove_active    = true while the window is open.
-     *   hmove_ticks     = colour clocks elapsed since HMOVE latched
-     *                     (0..HMOVE_WINDOW_CLOCKS-1).
-     *
-     * An HMx register write during the window writes `hm_remaining`
-     * with the new decoded motion, overriding whatever pulses were left
-     * from the original value.  HMCLR zeroes both HMx and the pending
-     * counts. */
-    int8_t   hm_remaining[5];
-    bool     hmove_active;
-    uint8_t  hmove_ticks;
+    /* HMOVE motion engine (gate-exact; see memory hmove-mechanism). On HMOVE a
+     * shared up-counter (hmove_clock) advances once every 4 color clocks; each
+     * object gets an extra clock (its position steps 1px left, but only during
+     * HBLANK) until the counter reaches that object's target
+     * hmm_clocks = (HMxx>>4)^8. The 8-clock extended HBLANK gives every object a
+     * +8-right baseline, so net motion = hmm_clocks-8 (the signed HM nibble). A
+     * late strobe leaves fewer 4-clock slots before the visible edge, so the
+     * object moves less. Rewriting an HMxx mid-window changes its target; if the
+     * counter has already passed the new target the object never stops
+     * (Cosmic Ark's runaway starfield). */
+    uint8_t  hmove_blank;      /* comb: leftmost N visible px forced black */
+    bool     extended_hblank;  /* comb armed this line (first HMOVE only) */
+    bool     hmove_active;     /* any object still moving */
+    uint16_t hmove_clock;      /* shared motion up-counter */
+    uint8_t  hmm_clocks[5];    /* per-object stop target 0..15 (P0,P1,M0,M1,BL) */
+    bool     obj_moving[5];    /* per-object more-movement-required latch */
 
     /* Delay queue — deferred register writes. Real hardware pipelines TIA
      * register writes through several colour-clock-latch stages before

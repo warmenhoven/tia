@@ -203,6 +203,62 @@ def rom_hmove_basic():
 
 
 # =======================================================================
+# hmove_hblank — HMOVE strobed during HBLANK (the standard, well-defined
+# case). Same +7 motion on P0 as hmove_basic; only the strobe timing
+# differs, isolating timing-dependent HMOVE bugs from the motion amount.
+# =======================================================================
+def rom_hmove_hblank():
+    code = list(PREAMBLE)
+    lda_sta(code, 0x84, 0x09)    # COLUBK blue
+    lda_sta(code, 0x46, 0x06)    # COLUP0
+    lda_sta(code, 0xFF, 0x1B)    # GRP0 = $FF
+    nops(code, 6)
+    sta(code, 0x10)              # RESP0 — anchor P0 mid-visible
+    sta(code, 0x02)              # WSYNC — align to next HBLANK
+    lda_sta(code, 0x70, 0x20)    # HMP0 = +7
+    sta(code, 0x2A)              # HMOVE — strobed during HBLANK
+    spin(code)
+    write('hmove_hblank.bin', code)
+
+
+# =======================================================================
+# hmove_midvisible — HMOVE strobed deep in the VISIBLE region (no sprite,
+# no HM motion). Isolates the comb: real silicon only extends HBLANK at the
+# left edge, so a late strobe must NOT blank mid-screen pixels. COLUBK stays
+# visible the whole line; the oracle tells us whether csim paints a mid-line
+# black band (our floating-comb model) or continuous background.
+# =======================================================================
+def rom_hmove_midvisible():
+    code = list(PREAMBLE)
+    lda_sta(code, 0x84, 0x09)    # COLUBK blue — visible background all line
+    sta(code, 0x02)              # WSYNC — align to start of scanline
+    nops(code, 18)               # ~36 cy = 108 ticks → beam mid-visible
+    sta(code, 0x2A)              # HMOVE strobed mid-visible (no HMxx set)
+    spin(code)
+    write('hmove_midvisible.bin', code)
+
+
+# =======================================================================
+# missile_ripple — the Cosmic Ark starfield mechanic: strobe HMOVE, then
+# rewrite HMM0 while the motion window is still open, injecting extra
+# motion pulses onto the missile's position counter.
+# =======================================================================
+def rom_missile_ripple():
+    code = list(PREAMBLE)
+    lda_sta(code, 0x84, 0x09)    # COLUBK blue
+    lda_sta(code, 0x46, 0x06)    # COLUP0 = missile color
+    lda_sta(code, 0x02, 0x1D)    # ENAM0
+    nops(code, 6)
+    sta(code, 0x12)              # RESM0 — anchor missile mid-visible
+    sta(code, 0x02)              # WSYNC — align to HBLANK
+    lda_sta(code, 0x70, 0x22)    # HMM0 = +7
+    sta(code, 0x2A)              # HMOVE
+    lda_sta(code, 0x80, 0x22)    # HMM0 = -8 rewritten mid-window (ripple)
+    spin(code)
+    write('missile_ripple.bin', code)
+
+
+# =======================================================================
 # grp_vdel — VDELP0 + staggered GRP0/GRP1 writes to exercise the
 # latch-on-paired-write mechanic. Writing GRP1 latches GRP0 (and enabl)
 # into their display shadows; VDELP0 routes the shadow to the renderer.
@@ -301,6 +357,9 @@ ALL = [
     rom_playfield_score,
     rom_resp0_visible,
     rom_hmove_basic,
+    rom_hmove_hblank,
+    rom_hmove_midvisible,
+    rom_missile_ripple,
     rom_grp_vdel,
     rom_missile_ball,
     rom_wsync_stall,
