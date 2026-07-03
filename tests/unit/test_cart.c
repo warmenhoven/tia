@@ -542,6 +542,118 @@ static int test_f0_hotspot_cycles_through_all_banks(void)
     return 0;
 }
 
+/* ============================================================
+ *   CommaVid (CV): 2K/4K ROM + 1K RAM
+ * ============================================================ */
+
+static int test_cv_detection(void)
+{
+    struct cart c;
+    uint8_t rom[2048];
+    /* Clean 2K → PLAIN. */
+    memset(rom, 0, sizeof(rom));
+    ASSERT_TRUE(cart_load(&c, rom, 2048));
+    ASSERT_EQ(c.mapper, CART_MAPPER_PLAIN);
+    /* STA $F3FF,X signature → CV (MagiCard). */
+    rom[0x10] = 0x9D; rom[0x11] = 0xFF; rom[0x12] = 0xF3;
+    ASSERT_TRUE(cart_load(&c, rom, 2048));
+    ASSERT_EQ(c.mapper, CART_MAPPER_CV);
+    /* STA $F400,Y signature → CV (Video Life). */
+    memset(rom, 0, sizeof(rom));
+    rom[0x20] = 0x99; rom[0x21] = 0x00; rom[0x22] = 0xF4;
+    ASSERT_TRUE(cart_load(&c, rom, 2048));
+    ASSERT_EQ(c.mapper, CART_MAPPER_CV);
+    return 0;
+}
+
+static int test_cv_ram_and_rom_windows(void)
+{
+    /* $F000-$F3FF reads RAM, $F400-$F7FF writes RAM (same 1K), $F800-$FFFF
+     * is the 2K ROM. */
+    struct cart c;
+    uint8_t rom[2048];
+    memset(rom, 0, sizeof(rom));
+    rom[0x10] = 0x9D; rom[0x11] = 0xFF; rom[0x12] = 0xF3;   /* CV signature */
+    rom[0x500] = 0xC5;                                       /* ROM marker */
+    cart_load(&c, rom, 2048);
+    /* ROM window: $F800+0x500 = $1D00 (a=0xD00 → data[0x500]). */
+    ASSERT_EQ(cart_read(&c, 0x1D00), 0xC5);
+    /* RAM: write via the $F400 port, read via the $F000 port. */
+    cart_write(&c, 0x1400, 0x55);   /* write port base */
+    cart_write(&c, 0x17FF, 0xAA);   /* write port top  */
+    ASSERT_EQ(cart_read(&c, 0x1000), 0x55);   /* read port base */
+    ASSERT_EQ(cart_read(&c, 0x13FF), 0xAA);   /* read port top  */
+    return 0;
+}
+
+static int test_cv_4k_initial_ram(void)
+{
+    /* 4K CV = first 2K initial RAM, second 2K ROM. */
+    struct cart c;
+    uint8_t rom[4096];
+    memset(rom, 0, sizeof(rom));
+    rom[0x800 + 0x10] = 0x9D; rom[0x800 + 0x11] = 0xFF; rom[0x800 + 0x12] = 0xF3;
+    rom[0x40] = 0x7E;             /* initial RAM byte 0x40 */
+    rom[0x800 + 0x500] = 0xD4;    /* ROM marker (2nd half) */
+    ASSERT_TRUE(cart_load(&c, rom, 4096));
+    ASSERT_EQ(c.mapper, CART_MAPPER_CV);
+    ASSERT_EQ(cart_read(&c, 0x1040), 0x7E);   /* RAM preloaded from image */
+    ASSERT_EQ(cart_read(&c, 0x1D00), 0xD4);   /* ROM */
+    return 0;
+}
+
+/* ============================================================
+ *   E7 (M-Network) 8K and 12K variants
+ * ============================================================ */
+
+static int test_e7_8k_detection_and_banks(void)
+{
+    struct cart c;
+    uint8_t rom[8192];
+    int b;
+    memset(rom, 0, sizeof(rom));
+    /* LDA $FFE4 → 8K E7 (Bump 'n' Jump). */
+    rom[0] = 0xAD; rom[1] = 0xE4; rom[2] = 0xFF;
+    for (b = 0; b < 3; b++) rom[b * 2048 + 0x100] = (uint8_t)(0xC0 + b);
+    rom[3 * 2048 + 0x500] = 0xE3;   /* last (bank 3) = fixed upper */
+    ASSERT_TRUE(cart_load(&c, rom, 8192));
+    ASSERT_EQ(c.mapper, CART_MAPPER_E7);
+    /* Lower-slot ROM banks 0..2 select via $1FE4..$1FE6. */
+    for (b = 0; b < 3; b++) {
+        cart_read(&c, 0x1FE4 + b);
+        if (cart_read(&c, 0x1100) != (uint8_t)(0xC0 + b)) return 1;
+    }
+    /* Fixed upper = last bank (3): $1D00 → bank3 offset 0x500. */
+    ASSERT_EQ(cart_read(&c, 0x1D00), 0xE3);
+    /* $1FE7 selects the 1K RAM into the lower slot. */
+    cart_read(&c, 0x1FE7);
+    cart_write(&c, 0x1000, 0x5A);
+    ASSERT_EQ(cart_read(&c, 0x1400), 0x5A);
+    return 0;
+}
+
+static int test_e7_12k_vs_fa(void)
+{
+    struct cart c;
+    uint8_t rom[12288];
+    /* Clean 12K → FA (CBS RAM+). */
+    memset(rom, 0, sizeof(rom));
+    ASSERT_TRUE(cart_load(&c, rom, 12288));
+    ASSERT_EQ(c.mapper, CART_MAPPER_FA);
+    /* With an E7 signature → E7 (12K "proper" BurgerTime). */
+    rom[0] = 0xAD; rom[1] = 0xE5; rom[2] = 0xFF;   /* LDA $FFE5 */
+    ASSERT_TRUE(cart_load(&c, rom, 12288));
+    ASSERT_EQ(c.mapper, CART_MAPPER_E7);
+    /* 6 banks: last (5) is RAM/fixed-upper. $1FE0..$1FE4 pick ROM 0..2. */
+    memset(rom + 3, 0, 12288 - 3);
+    rom[0 * 2048 + 0x100] = 0xA0;
+    rom[4 * 2048 + 0x100] = 0xA4;   /* $1FE4 remaps to bank 2 */
+    cart_load(&c, rom, 12288);
+    cart_read(&c, 0x1FE0);
+    ASSERT_EQ(cart_read(&c, 0x1100), 0xA0);
+    return 0;
+}
+
 TEST_MAIN_BEGIN
     RUN_TEST(test_load_4k);
     RUN_TEST(test_load_2k_mirrors);
@@ -568,4 +680,9 @@ TEST_MAIN_BEGIN
     RUN_TEST(test_e7_upper_ram_banked);
     RUN_TEST(test_f0_loads_and_starts_in_last_bank);
     RUN_TEST(test_f0_hotspot_cycles_through_all_banks);
+    RUN_TEST(test_cv_detection);
+    RUN_TEST(test_cv_ram_and_rom_windows);
+    RUN_TEST(test_cv_4k_initial_ram);
+    RUN_TEST(test_e7_8k_detection_and_banks);
+    RUN_TEST(test_e7_12k_vs_fa);
 TEST_MAIN_END
