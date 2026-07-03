@@ -30,10 +30,11 @@ scans for ambiguous sizes.
 |-------------------|-----------------------------------------------|
 | Plain ROM         | 2K, 4K                                        |
 | Atari bank-switch | F8, F6, F4 (+ SuperChip RAM variants)         |
-| 3rd-party         | 3F (Tigervision), E0 (Parker Bros),<br>FE (Activision), FA (CBS RAM+),<br>E7 (M-Network), F0 (Megaboy), DPC (Pitfall II) |
+| 3rd-party         | 3F (Tigervision), E0 (Parker Bros),<br>FE (Activision), FA (CBS RAM+),<br>E7 (M-Network), F0 (Megaboy),<br>UA (UA Ltd.), DPC (Pitfall II) |
+| Supercharger      | AR (Starpath/Arcadia tape image, multi-load)  |
 
-Not yet supported: AR (Supercharger), DPC+, CDF/CDFJ, BUS, and the
-long-tail exotic mappers.
+Not yet supported: DPC+, CDF/CDFJ, BUS, and the long-tail exotic
+mappers.
 
 ## Supported controllers
 
@@ -59,10 +60,17 @@ overlay; OSD feedback on latch changes.
 | `tia_crop_voverscan`      | `0, 2, 4, …, 24` (rows)                | `0`          |
 | `tia_paddle_sensitivity`  | `1..10` (5 = neutral)                  | `5`          |
 | `tia_paddle_deadzone`     | `0..30` (% of stick range)             | `0`          |
+| `tia_ram_init`            | `hardware, zero`                       | `hardware`   |
 
 Difficulty/TV-type options set only the *initial* latch; runtime
 button toggles work on top. Region auto-detect locks NTSC vs PAL from
 the game's scanline count after ~5 frames.
+
+`tia_ram_init` controls the power-on contents of the 128-byte RIOT
+RAM: `hardware` fills it with fresh per-boot pseudo-random noise (like
+a real console, whose uninitialized RAM is different every power-on),
+`zero` clears it. A handful of games read uninitialized RAM as data;
+`zero` gives them deterministic (and reference-matching) behaviour.
 
 ## Project layout
 
@@ -73,11 +81,14 @@ src/
   tia.c / tia.h          TIA: video, audio, input
   riot.c / riot.h        6532 RIOT: RAM, I/O, timer
   cart.c / cart.h        Mapper implementations
+  palette.c / palette.h  NTSC/PAL/SECAM + z26 palette tables
   libretro.c / .h        libretro API surface
+  compat.h               C89 shims
 tests/
   unit/                  C unit tests (plain Makefile)
   int/                   Python integration tests (pytest + libretro.py)
-  tools/                 Test-data fetchers (Harte corpus)
+  oracle/                Gate-level ground truth (csim) + test ROMs
+  tools/                 Oracle harness, diff tools, data fetchers
 ```
 
 ## Testing
@@ -90,13 +101,16 @@ make -C tests/unit test
 # libretro integration tests — exercise retro_* API via Python
 tests/int/.venv/bin/python -m pytest tests/int
 
-# Compatibility sweep against a ROM collection (set ATARI_ROM_DIR)
-ATARI_ROM_DIR=/path/to/collection \
-  tests/int/.venv/bin/python tmp/test_the_world.py
+# Oracle suite — diff our per-TIA-clock trace against the gate-level
+# csim reference across the hand-crafted test ROMs
+make -C tests/tools oracle-test
 ```
 
 Harte CPU vectors live in `tests/unit/roms/harte_65x02.bin` (fetched
-on demand by `tests/tools/fetch_harte.py` — ~160 MB, not in git).
+on demand by `tests/tools/fetch_harte.py` — ~160 MB, not in git). The
+gate-level oracle (`tests/oracle/csim/`, a native port of Greg James's
+Sim2600 transistor simulation) is checked in with its netlists and
+builds standalone.
 
 ## License
 
