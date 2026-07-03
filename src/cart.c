@@ -109,10 +109,43 @@ static uint8_t detect_8k_mapper(const uint8_t *rom, size_t size)
             if (find_bytes(rom, size, fe[i], 5)) return CART_MAPPER_FE;
     }
 
+    /* E7 (M-Network) in its 8K form (e.g. Bump 'n' Jump): bankswitch via the
+     * $1FE4-$1FE6 hotspots. Curated LDA signatures (from the MESS project). */
+    {
+        static const uint8_t e7[][3] = {
+            { 0xAD, 0xE4, 0xFF },  /* LDA $FFE4 */
+            { 0xAD, 0xE5, 0xFF },  /* LDA $FFE5 */
+            { 0xAD, 0xE6, 0xFF }   /* LDA $FFE6 */
+        };
+        size_t i;
+        for (i = 0; i < sizeof e7 / sizeof e7[0]; i++)
+            if (find_bytes(rom, size, e7[i], 3)) return CART_MAPPER_E7;
+    }
+
     /* Default F8.  No reset-vector guessing: the curated E0 signatures above
      * already catch the indirect-access E0 games (Gyruss etc.) the old
      * heuristic rescued, without the false positives it caused. */
     return CART_MAPPER_F8;
+}
+
+/* E7 (M-Network) bankswitch signatures ($1FE0-$1FE7 hotspots). Used to tell a
+ * 12K M-Network cart (e.g. the 12K "proper" BurgerTime) from a 12K CBS RAM+
+ * (FA), which share a byte size. */
+static int detect_e7(const uint8_t *rom, size_t size)
+{
+    static const uint8_t sig[][3] = {
+        { 0xAD, 0xE2, 0xFF },  /* LDA $FFE2 */
+        { 0xAD, 0xE5, 0xFF },  /* LDA $FFE5 */
+        { 0xAD, 0xE5, 0x1F },  /* LDA $1FE5 */
+        { 0xAD, 0xE7, 0x1F },  /* LDA $1FE7 */
+        { 0x0C, 0xE7, 0x1F },  /* NOP $1FE7 */
+        { 0x8D, 0xE7, 0xFF },  /* STA $FFE7 */
+        { 0x8D, 0xE7, 0x1F }   /* STA $1FE7 */
+    };
+    size_t i;
+    for (i = 0; i < sizeof sig / sizeof sig[0]; i++)
+        if (find_bytes(rom, size, sig[i], 3)) return 1;
+    return 0;
 }
 
 /* E7 (M-Network) vs F6: both are 16K. E7 uses the hotspot range $1FE0-$1FEB
@@ -399,12 +432,19 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
         return true;
 
     case 12288:
-        /* FA / CBS RAM+: 3 × 4K banks, 256 bytes cart RAM.
-         * Reset vector lives in bank 2 (top), so boot there. */
         memcpy(c->data, rom, 12288);
         c->size   = 12288;
-        c->mapper = CART_MAPPER_FA;
-        c->bank   = 2;
+        if (detect_e7(rom, size)) {
+            /* 12K M-Network E7 (e.g. the "proper 12K" BurgerTime): 6 × 2K
+             * banks + RAM. Reset vectors sit in the fixed upper (last) bank. */
+            c->mapper = CART_MAPPER_E7;
+            c->bank   = 0;
+        } else {
+            /* FA / CBS RAM+: 3 × 4K banks, 256 bytes cart RAM.
+             * Reset vector lives in bank 2 (top), so boot there. */
+            c->mapper = CART_MAPPER_FA;
+            c->bank   = 2;
+        }
         return true;
 
     case 16384:
@@ -484,6 +524,24 @@ static void hotspot_e0(struct cart *c, uint16_t a)
     if      (a >= 0xFE0 && a <= 0xFE7) c->e0_slots[0] = (uint8_t)(a & 7);
     else if (a >= 0xFE8 && a <= 0xFEF) c->e0_slots[1] = (uint8_t)(a & 7);
     else if (a >= 0xFF0 && a <= 0xFF7) c->e0_slots[2] = (uint8_t)(a & 7);
+}
+
+/* E7 (M-Network) hotspot decode. The lower-slot bank select depends on the ROM
+ * size (8K/12K/16K = 4/6/8 banks); the highest bank index is the 1K RAM. The
+ * $1FE8-$1FEB hotspots pick the 256-byte upper-RAM bank. Shared by read+write
+ * since games trigger switches with both loads and stores. */
+static void e7_hotspot(struct cart *c, uint16_t a)
+{
+    unsigned nbanks = c->size / 2048u;   /* 4, 6, or 8 */
+    if (nbanks == 4) {
+        if (a >= 0xFE4 && a <= 0xFE7) c->bank = (uint8_t)(a & 3);
+    } else if (nbanks == 6) {
+        static const uint8_t map6[8] = { 0, 1, 0, 1, 2, 3, 4, 5 };
+        if (a >= 0xFE0 && a <= 0xFE7) c->bank = map6[a & 7];
+    } else {                             /* 8 banks (16K) */
+        if (a >= 0xFE0 && a <= 0xFE7) c->bank = (uint8_t)(a & 7);
+    }
+    if (a >= 0xFE8 && a <= 0xFEB) c->e7_upper_bank = (uint8_t)(a & 3);
 }
 
 /* ============================================================
@@ -652,45 +710,30 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
         return c->data[c->bank * 4096u + a];
 
     case CART_MAPPER_E7: {
-        /* Memory map:
-         *   $1000-$17FF lower 2K: switchable ROM bank 0..6, or the 1K RAM
-         *       block when e7_lower_ram is set (writes $1000-$13FF, reads
+        /* M-Network. Sizes 8K/12K/16K = 4/6/8 banks of 2K. Memory map:
+         *   $1000-$17FF lower 2K: switchable ROM bank, or the 1K RAM block
+         *       when the last bank is selected (writes $1000-$13FF, reads
          *       $1400-$17FF — same 1K).
-         *   $1800-$19FF upper 2K private RAM (256-byte bank × 4): writes
+         *   $1800-$19FF upper 256-byte private RAM (bank × 4): writes
          *       $1800-$18FF, reads $1900-$19FF.
-         *   $1A00-$1FFF: hardwired to bank 7 (last 2K of ROM).
-         *
-         * Hotspots: $1FE0..$1FE6 select lower ROM bank 0..6; $1FE7 enables
-         * lower RAM; $1FE8..$1FEB select upper RAM bank 0..3. */
-        uint8_t ret;
-        if      (a >= 0xFE0 && a <= 0xFE6) { c->bank = (uint8_t)(a & 7); c->e7_lower_ram = false; }
-        else if (a == 0xFE7)               { c->e7_lower_ram = true; }
-        else if (a >= 0xFE8 && a <= 0xFEB) { c->e7_upper_bank = (uint8_t)(a & 3); }
-
-        if (a < 0x400) {
-            /* Lower-slot write window when RAM enabled; otherwise ROM. */
-            if (c->e7_lower_ram) return 0;  /* write-only window */
-            return c->data[c->bank * 2048u + a];
-        }
+         *   $1A00-$1FFF: hardwired to the last 2K of ROM (holds the vectors).
+         * Hotspots decoded in e7_hotspot(); the highest bank index is RAM. */
+        unsigned last = c->size / 2048u - 1;   /* RAM bank + fixed upper bank */
+        e7_hotspot(c, a);
         if (a < 0x800) {
-            /* Lower-slot read window. RAM (1K block) when enabled,
-             * otherwise continuation of the same ROM bank. */
-            if (c->e7_lower_ram) return c->e7_ram[a - 0x400];
+            /* Lower slot: 1K RAM when the RAM bank is selected (read/write
+             * ports share the same 1K), otherwise the selected ROM bank. */
+            if (c->bank == last)
+                return c->e7_ram[a & 0x3FF];
             return c->data[c->bank * 2048u + a];
         }
-        if (a < 0x900) {
-            /* Upper private-RAM write window (write-only; read returns 0). */
-            return 0;
+        if (a >= 0x800 && a < 0xA00) {
+            /* Upper 256-byte private RAM (write port $1800-$18FF, read port
+             * $1900-$19FF; a read of either returns the cell). */
+            return c->e7_ram[1024u + (uint16_t)c->e7_upper_bank * 256u + (a & 0xFF)];
         }
-        if (a < 0xA00) {
-            /* Upper private-RAM read window. */
-            ret = c->e7_ram[1024u + (uint16_t)c->e7_upper_bank * 256u + (a - 0x900)];
-            return ret;
-        }
-        /* $1A00-$1FFF: fixed upper 2K (bank 7). Offset within that bank
-         * is (a - 0x800) since bank 7 covers the 2K starting at offset
-         * 0x800 of our view. */
-        return c->data[7u * 2048u + (a - 0x800)];
+        /* $1A00-$1FFF: fixed to the last ROM bank. */
+        return c->data[last * 2048u + (a & 0x7FF)];
     }
 
     case CART_MAPPER_F0:
@@ -861,19 +904,18 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
             c->fa_ram[a] = data;
         return;
 
-    case CART_MAPPER_E7:
-        if      (a >= 0xFE0 && a <= 0xFE6) { c->bank = (uint8_t)(a & 7); c->e7_lower_ram = false; return; }
-        else if (a == 0xFE7)               { c->e7_lower_ram = true;  return; }
-        else if (a >= 0xFE8 && a <= 0xFEB) { c->e7_upper_bank = (uint8_t)(a & 3); return; }
-        if (a < 0x400 && c->e7_lower_ram) {
+    case CART_MAPPER_E7: {
+        unsigned last = c->size / 2048u - 1;
+        e7_hotspot(c, a);
+        /* Lower-slot 1K RAM write port is $1000-$13FF (the $1400-$17FF read
+         * port ignores writes). */
+        if (a < 0x400 && c->bank == last)
             c->e7_ram[a] = data;
-            return;
-        }
-        if (a >= 0x800 && a < 0x900) {
+        /* Upper 256-byte RAM write port is $1800-$18FF. */
+        else if (a >= 0x800 && a < 0x900)
             c->e7_ram[1024u + (uint16_t)c->e7_upper_bank * 256u + (a - 0x800)] = data;
-            return;
-        }
         return;
+    }
 
     case CART_MAPPER_F0:
         if (a == 0xFF0) c->bank = (uint8_t)((c->bank + 1) & 0x0F);
