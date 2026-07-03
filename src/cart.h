@@ -15,6 +15,7 @@
 #define CART_AR_RAM_SIZE   6144          /* 3 RAM banks */
 #define CART_AR_LOAD_SIZE  8448          /* one on-tape load (8K image + 256B hdr) */
 #define CART_AR_IMAGE_SIZE 8192          /* live image: 6K RAM + 2K BIOS ROM */
+#define CART_CV_RAM_SIZE   1024          /* CommaVid: 1K on-cart RAM */
 
 enum cart_mapper {
     CART_MAPPER_PLAIN = 0,  /* 2K or 4K ROM, no bank switching */
@@ -29,7 +30,8 @@ enum cart_mapper {
     CART_MAPPER_E7,         /* M-Network: 16K, 8 banks × 2K, 2K cart RAM */
     CART_MAPPER_F0,         /* Megaboy: 64K, 16 banks × 4K, +1 on $1FF0 access */
     CART_MAPPER_UA,         /* UA Ltd: 8K, 2 banks × 4K, hotspots $0220/$0240 */
-    CART_MAPPER_AR          /* Starpath/Arcadia Supercharger: 6K RAM + 2K BIOS */
+    CART_MAPPER_AR,         /* Starpath/Arcadia Supercharger: 6K RAM + 2K BIOS */
+    CART_MAPPER_CV          /* CommaVid: 2K ROM + 1K RAM (read $F000, write $F400) */
 };
 
 struct cart {
@@ -87,6 +89,10 @@ struct cart {
     uint8_t  ar_bank;
     uint8_t *ar_ram;
     const uint64_t *ar_access;
+
+    /* CV (CommaVid): 1K on-cart RAM. Read window $F000-$F3FF, write window
+     * $F400-$F7FF (same 1K); fixed 2K ROM at $F800-$FFFF (in c->data). */
+    uint8_t  cv_ram[CART_CV_RAM_SIZE];
 };
 
 /* Load ROM. Returns false if size is unsupported. Initialises mapper state

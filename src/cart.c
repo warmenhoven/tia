@@ -144,6 +144,17 @@ static uint8_t detect_16k_mapper(const uint8_t *rom, size_t size)
     return CART_MAPPER_F6;
 }
 
+/* CommaVid (CV): a 2K/4K ROM with 1K on-cart RAM. Detected by the RAM-access
+ * instruction signatures the two known games use (RAM read port at $F3FF, write
+ * port at $F400) — plain 2K/4K ROMs never contain these stores. */
+static int detect_cv(const uint8_t *rom, size_t size)
+{
+    static const uint8_t sig_magicard[3]  = { 0x9D, 0xFF, 0xF3 };  /* STA $F3FF,X */
+    static const uint8_t sig_videolife[3] = { 0x99, 0x00, 0xF4 };  /* STA $F400,Y */
+    return find_bytes(rom, size, sig_magicard, 3)
+        || find_bytes(rom, size, sig_videolife, 3);
+}
+
 /* ============================================================
  *   AR (Starpath/Arcadia Supercharger)
  * ============================================================ */
@@ -347,6 +358,13 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
 
     switch (size) {
     case 2048:
+        if (detect_cv(rom, 2048)) {
+            /* 2K CV: the ROM sits at $F800-$FFFF; the 1K RAM powers up clear. */
+            memcpy(c->data, rom, 2048);
+            c->size   = 2048;
+            c->mapper = CART_MAPPER_CV;
+            return true;
+        }
         memcpy(c->data, rom, 2048);
         memcpy(c->data + 2048, rom, 2048);   /* mirror into 4K window */
         c->size   = 2048;
@@ -354,6 +372,15 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
         return true;
 
     case 4096:
+        if (detect_cv(rom, 4096)) {
+            /* 4K CV (e.g. a MagiCard image with a saved listing): the first 2K
+             * is the initial RAM contents, the second 2K is the ROM. */
+            memcpy(c->data, rom + 2048, 2048);
+            memcpy(c->cv_ram, rom, CART_CV_RAM_SIZE);
+            c->size   = 2048;
+            c->mapper = CART_MAPPER_CV;
+            return true;
+        }
         memcpy(c->data, rom, 4096);
         c->size   = 4096;
         c->mapper = CART_MAPPER_PLAIN;
@@ -567,6 +594,13 @@ uint8_t cart_read(struct cart *c, uint16_t addr)
         /* No in-cart-space hotspots. Bank switching happens via
          * cart_snoop_bus when the CPU accesses $0220/$0240 (RIOT space). */
         return c->data[c->bank * 4096u + a];
+
+    case CART_MAPPER_CV:
+        /* $F000-$F3FF reads RAM; $F400-$F7FF is the write port (a read there
+         * returns the same 1K cell); $F800-$FFFF is the 2K ROM. */
+        if (a < 0x400) return c->cv_ram[a];
+        if (a < 0x800) return c->cv_ram[a - 0x400];
+        return c->data[a - 0x800];
 
     case CART_MAPPER_AR: {
         /* Decode the full 13-bit address (hotspots at $1850 and $1FF8). */
@@ -784,6 +818,12 @@ void cart_write(struct cart *c, uint16_t addr, uint8_t data)
 
     case CART_MAPPER_UA:
         /* ROM only; bank switching is via the $0220/$0240 snoop. */
+        return;
+
+    case CART_MAPPER_CV:
+        /* Writes land only through the $F400-$F7FF write port. */
+        if (a >= 0x400 && a < 0x800)
+            c->cv_ram[a - 0x400] = data;
         return;
 
     case CART_MAPPER_AR: {
