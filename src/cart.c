@@ -257,7 +257,9 @@ static void ar_init_rom(struct cart *c)
 {
     uint8_t code[294];
     memcpy(code, ar_dummy_rom, sizeof code);
-    code[109] = 0x00;   /* 0x00 -> show SC BIOS load bars (vs 0xFF: skip them) */
+    code[109] = 0xFF;   /* 0xFF -> skip the SC BIOS load bars (fast load, the
+                         * de-facto reference default); 0x00 shows the bars,
+                         * whose ~3 s animation delays the load past frame 190. */
     code[281] = 0x00;   /* value left in A on BIOS exit; fixed 0 is fine */
 
     /* Fill the ROM bank with an illegal 6502 opcode (0x02 jams a real CPU),
