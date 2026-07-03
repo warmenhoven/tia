@@ -407,8 +407,9 @@ bool cart_load(struct cart *c, const void *rom, size_t size)
     case 4096:
         if (detect_cv(rom, 4096)) {
             /* 4K CV (e.g. a MagiCard image with a saved listing): the first 2K
-             * is the initial RAM contents, the second 2K is the ROM. */
-            memcpy(c->data, rom + 2048, 2048);
+             * is the initial RAM contents, the second 2K is the ROM. Cast off
+             * const void* before the offset: MSVC rejects void-pointer math. */
+            memcpy(c->data, (const uint8_t *)rom + 2048, 2048);
             memcpy(c->cv_ram, rom, CART_CV_RAM_SIZE);
             c->size   = 2048;
             c->mapper = CART_MAPPER_CV;
