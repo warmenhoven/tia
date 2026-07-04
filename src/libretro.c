@@ -254,6 +254,22 @@ static const struct retro_core_option_v2_definition core_options_v2[] = {
         "hardware"
     },
     {
+        "tia_dc_block", "Audio DC blocking (high-pass)", NULL,
+        "Remove the DC offset from the audio with a gentle ~20 Hz high-pass, "
+        "modelling the coupling capacitor in the console's audio path (and the "
+        "AC-coupled TV amp) -- i.e. the signal that actually left the console. "
+        "Off outputs the raw unipolar TIA DAC, which carries a large "
+        "signal-dependent DC offset (Pitfall! sits near 40% of full scale). "
+        "Recommended on.",
+        NULL, NULL,
+        {
+            { "on",  "On" },
+            { "off", "Off" },
+            { NULL, NULL }
+        },
+        "on"
+    },
+    {
         "tia_crop_hoverscan", "Crop horizontal overscan", NULL,
         "Trim 8 pixels from each side of the visible area, removing the "
         "leftmost and rightmost columns most 2600 games don't draw into. "
@@ -320,6 +336,7 @@ static const struct retro_variable core_options_v0[] = {
     { "tia_right_diff",      "Right Difficulty (initial); b|a" },
     { "tia_color",           "TV Type (initial); color|bw" },
     { "tia_ram_init",        "Power-on RAM; hardware|zero" },
+    { "tia_dc_block",        "Audio DC blocking (high-pass); on|off" },
     { "tia_crop_hoverscan",  "Crop horizontal overscan; off|on" },
     { "tia_crop_voverscan",  "Crop vertical overscan (rows); 0|2|4|6|8|10|12|14|16|18|20|22|24" },
     { "tia_paddle_sensitivity", "Paddle sensitivity; 1|2|3|4|5|6|7|8|9|10" },
@@ -519,6 +536,29 @@ static void apply_switch_initial_options(void)
     sys.sw_color        = !get_bool_option("tia_color",     "bw");
 }
 
+/* Audio DC-block: a first-order high-pass (y = alpha*(y[-1] + x - x[-1]))
+ * modelling the coupling capacitor that sits between the TIA DAC and the RF
+ * modulator on real hardware. On by default. State persists across frames;
+ * reset it on load/reset (see reset_dc_block). */
+static int   dc_block_on = 1;
+static float dc_block_alpha = 0.996f;   /* recomputed from the sample rate */
+static float dc_block_x1 = 0.f, dc_block_y1 = 0.f;
+
+static void apply_audio_options(void)
+{
+    double fs = region_sample_rate(sys.active_region);
+    /* 10 Hz cutoff: below the audible floor and below the TIA's lowest tones
+     * (~30 Hz), so it removes only DC/subsonic while leaving audio untouched. */
+    const double fc = 10.0;
+    dc_block_on    = !get_bool_option("tia_dc_block", "off");   /* default on */
+    dc_block_alpha = (float)(1.0 / (1.0 + 2.0 * 3.14159265358979 * fc / fs));
+}
+
+static void reset_dc_block(void)
+{
+    dc_block_x1 = dc_block_y1 = 0.f;
+}
+
 void retro_set_video_refresh(retro_video_refresh_t cb)       { video_cb = cb; }
 void retro_set_audio_sample(retro_audio_sample_t cb)         { audio_cb = cb; }
 void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
@@ -589,6 +629,8 @@ void retro_reset(void)
     sys.sw_left_diff_a  = false;
     sys.sw_right_diff_a = false;
     apply_switch_initial_options();
+    apply_audio_options();
+    reset_dc_block();
     tia_reset(&sys.tia);
     riot_reset(&sys.riot);
     cpu_reset(&sys.cpu);
@@ -1038,6 +1080,7 @@ void retro_run(void)
         if (geom_changed) push_av_info();
         apply_palette_option();
         apply_paddle_options();
+        apply_audio_options();
     }
     /* If we're in auto mode and detection just locked this frame, apply. */
     if (sys.region_setting < 0 && sys.tia.detect_locked &&
@@ -1088,6 +1131,21 @@ void retro_run(void)
         int16_t stereo[AUDIO_BUF_MONO * 2];
         size_t n = tia_drain_audio(&sys.tia, mono, AUDIO_BUF_MONO);
         size_t i;
+        /* DC block: first-order high-pass, models the coupling capacitor in
+         * the real console's audio path. Converts the unipolar DAC (0..+FS)
+         * to a centred signal so the constant offset (e.g. Pitfall!'s ~40% FS)
+         * doesn't reach full-range playback. */
+        if (dc_block_on) {
+            for (i = 0; i < n; i++) {
+                float x = (float)mono[i];
+                float y = dc_block_alpha * (dc_block_y1 + x - dc_block_x1);
+                dc_block_x1 = x;
+                dc_block_y1 = y;
+                if (y > 32767.f) y = 32767.f;
+                else if (y < -32768.f) y = -32768.f;
+                mono[i] = (int16_t)y;
+            }
+        }
         for (i = 0; i < n; i++) {
             stereo[i * 2]     = mono[i];
             stereo[i * 2 + 1] = mono[i];
@@ -1153,6 +1211,8 @@ bool retro_load_game(const struct retro_game_info *info)
     apply_crop_options();
     apply_switch_initial_options();
     apply_paddle_options();
+    apply_audio_options();
+    reset_dc_block();
     sys.ram_init_hardware = !get_bool_option("tia_ram_init", "zero");
     tia_set_region(&sys.tia, sys.active_region);
     riot_init(&sys.riot);
