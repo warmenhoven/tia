@@ -323,7 +323,9 @@ static int missile_pixel_on(int x, int start, uint8_t nusiz, bool enam,
     }
     for (c = 0; c < copies; c++) {
         int cs = start + c * spacing - early;
-        if (x >= cs && x < cs + size) return 1;
+        int rel = x - cs;
+        if (rel < 0 && cs + size > 160) rel += 160;   /* right-edge wrap (mod-160) */
+        if (rel >= 0 && rel < size) return 1;
     }
     return 0;
 }
@@ -332,8 +334,11 @@ static int missile_pixel_on(int x, int start, uint8_t nusiz, bool enam,
 static int ball_pixel_on(int x, int start, uint8_t ctrlpf, bool enabl)
 {
     int size = ball_size(ctrlpf);
+    int rel;
     if (!enabl) return 0;
-    if (x >= start && x < start + size) return 1;
+    rel = x - start;
+    if (rel < 0 && start + size > 160) rel += 160;   /* right-edge wrap (mod-160) */
+    if (rel >= 0 && rel < size) return 1;
     return 0;
 }
 
@@ -349,8 +354,15 @@ static int player_pixel_on(uint8_t gfx, int x, int start,
     if (gfx == 0) return 0;
     for (c = 0; c < copies; c++) {
         int copy_start = start + c * spacing;
-        if (x >= copy_start && x < copy_start + sprite_px) {
-            int bit_idx = (x - copy_start) / width;
+        int rel = x - copy_start;
+        /* Right-edge wrap: the object position counter is modulo-160, so a copy
+         * whose graphics overrun x=159 reappear at the left edge. Frogger's
+         * quad-width river logs rely on this. (A negative start position from an
+         * HBLANK strobe is clipped off the left, not wrapped to the right.) */
+        if (rel < 0 && copy_start + sprite_px > 160)
+            rel += 160;
+        if (rel >= 0 && rel < sprite_px) {
+            int bit_idx = rel / width;
             if (refp) bit_idx = 7 - bit_idx;
             if ((gfx >> (7 - bit_idx)) & 1) return 1;
         }

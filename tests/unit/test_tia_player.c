@@ -302,8 +302,27 @@ static int test_p1_beats_playfield(void)
     return 0;
 }
 
+/* A wide player (quad-width NUSIZ=07, 32px) positioned near the right edge
+ * wraps its overflow around to the left edge: the TIA object position counter
+ * is modulo-160. pos=150 covers x=150..159 and wraps to x=0..21. Frogger's
+ * river logs are quad-width players that rely on this. */
+static int test_grp0_quad_wraps_right_edge(void)
+{
+    struct tia t;
+    std_setup(&t);
+    t.p0_pos = 150;
+    tia_write(&t, 0x04, 0x07);   /* NUSIZ0 = quad width (32px) */
+    tia_write(&t, 0x1B, 0xFF);   /* GRP0 = all on */
+    full_scanline(&t);
+    if (expect_range(&t, 150, 159, P0_COLOR(t), "right part")) return 1;
+    if (expect_range(&t, 0, 21, P0_COLOR(t), "wrapped-left part")) return 1;
+    if (expect_range(&t, 22, 149, BG_COLOR(t), "gap")) return 1;
+    return 0;
+}
+
 TEST_MAIN_BEGIN
     RUN_TEST(test_grp0_all_on_draws_8_pixels);
+    RUN_TEST(test_grp0_quad_wraps_right_edge);
     RUN_TEST(test_grp0_msb_only_is_leftmost);
     RUN_TEST(test_grp0_lsb_only_is_rightmost);
     RUN_TEST(test_refp0_flips_sprite);

@@ -31,6 +31,9 @@ struct riot {
     uint16_t prescaler_cnt;     /* counts cycles up to prescaler_div */
     bool     timer_underflow;   /* TIMINT bit 7 */
     bool     timer_irq_enable;  /* from A3 on last interval write */
+    bool     wrapped_this_cycle;/* timer underflowed on the current cycle:
+                                 * an INTIM read this cycle holds the flag.
+                                 * Transient per-cycle state, not serialized. */
 
     /* PA7 edge detect */
     bool     pa7_edge_positive; /* true = positive edge, false = negative */

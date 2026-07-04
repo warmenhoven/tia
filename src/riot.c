@@ -59,6 +59,7 @@ void riot_reset(struct riot *r)
     r->prescaler_div = 1;
     r->prescaler_cnt = 0;
     r->timer_underflow = false;
+    r->wrapped_this_cycle = false;
     r->timer_irq_enable = false;
     r->pa7_edge_positive = false;
     r->pa7_irq_enable = false;
@@ -83,15 +84,27 @@ void riot_tick(struct riot *r)
         r->pa7_last = pa7;
     }
 
-    /* Timer prescaler */
+    /* Timer. The prescaler sub-phase advances every cycle regardless of the
+     * count rate, so when the underflow flag is cleared (by an INTIM read or a
+     * timer write) the programmed interval resumes in-phase, matching hardware
+     * (6532 datasheet; nocash 2k6specs). While the flag is set the timer
+     * decrements once per cycle (div-1); otherwise once per programmed
+     * interval. wrapped_this_cycle records an underflow on this cycle so an
+     * INTIM read landing on it holds the flag rather than reverting. */
+    r->wrapped_this_cycle = false;
     r->prescaler_cnt++;
-    if (r->prescaler_cnt >= r->prescaler_div) {
+    if (r->prescaler_cnt >= r->prescaler_div)
         r->prescaler_cnt = 0;
+    if (r->timer_underflow) {
+        r->timer--;                     /* div-1: one decrement per cycle */
+        if (r->timer == 0xFF)
+            r->wrapped_this_cycle = true;
+    } else if (r->prescaler_cnt == 0) {
         if (r->timer == 0) {
             r->timer_underflow = true;
-            r->prescaler_div = 1;
+            r->wrapped_this_cycle = true;
         }
-        r->timer--;  /* wraps 0x00 -> 0xFF on underflow */
+        r->timer--;                     /* wraps 0x00 -> 0xFF on underflow */
     }
 }
 
@@ -127,10 +140,15 @@ uint8_t riot_read(struct riot *r, uint16_t addr)
         r->pa7_edge_flag = false;
         return v;
     }
-    /* INTIM: reading the timer clears the underflow flag. */
+    /* INTIM: reading clears the underflow flag and resumes the programmed
+     * interval -- unless the underflow happened on this very cycle, in which
+     * case the flag is held and div-1 continues (6532 datasheet; nocash
+     * 2k6specs). The bus ticks the timer before this read, so wrapped_this_cycle
+     * reflects an underflow on the read's own cycle. */
     {
         uint8_t v = r->timer;
-        r->timer_underflow = false;
+        if (!r->wrapped_this_cycle)
+            r->timer_underflow = false;
         return v;
     }
 }
@@ -235,6 +253,7 @@ bool riot_deserialize(struct riot *r, const void *buf, size_t size)
     r->pa7_irq_enable    = (eflags & 2) != 0;
     r->pa7_edge_flag     = (eflags & 4) != 0;
     r->pa7_last = *p++;
+    r->wrapped_this_cycle = false;  /* transient; recomputed on next tick */
     (void)p;
     return true;
 }
